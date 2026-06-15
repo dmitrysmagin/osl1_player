@@ -50,19 +50,24 @@ void opl_dev_program(opl_dev *d, int voice, const uint8_t *adl)
 
     int      ch   = voice % 9;
     uint16_t bank = voice_bank(voice);
-    uint8_t  m    = OP_OFF[ch];           /* modulator operator offset */
-    uint8_t  c    = (uint8_t)(m + 3);     /* carrier operator offset   */
+    uint8_t  mod  = OP_OFF[ch];           /* modulator slot (op0)          */
+    uint8_t  car  = (uint8_t)(mod + 3);   /* carrier slot (op1, audible)   */
 
-    wr(d, bank + 0x20 + m, adl[0]);
-    wr(d, bank + 0x40 + m, adl[1]);
-    wr(d, bank + 0x60 + m, adl[2]);
-    wr(d, bank + 0x80 + m, adl[3]);
-    wr(d, bank + 0xE0 + m, adl[4]);
-    wr(d, bank + 0x20 + c, adl[6]);
-    wr(d, bank + 0x40 + c, adl[7]);
-    wr(d, bank + 0x60 + c, adl[8]);
-    wr(d, bank + 0x80 + c, adl[9]);
-    wr(d, bank + 0xE0 + c, adl[10]);
+    /* ADL byte order: bytes 0..5 = CARRIER, bytes 6..11 = MODULATOR.
+     * (RE-REPORT 5.1's labels are reversed vs the OPL operator roles;
+     * verified empirically — the original order silences real patches —
+     * and corroborated by Appendix B.5, whose volume reg KSL comes from
+     * adl[1], i.e. the carrier's 0x40 byte.) */
+    wr(d, bank + 0x20 + car, adl[0]);
+    wr(d, bank + 0x40 + car, adl[1]);
+    wr(d, bank + 0x60 + car, adl[2]);
+    wr(d, bank + 0x80 + car, adl[3]);
+    wr(d, bank + 0xE0 + car, adl[4]);
+    wr(d, bank + 0x20 + mod, adl[6]);
+    wr(d, bank + 0x40 + mod, adl[7]);
+    wr(d, bank + 0x60 + mod, adl[8]);
+    wr(d, bank + 0x80 + mod, adl[9]);
+    wr(d, bank + 0xE0 + mod, adl[10]);
     /* feedback/algorithm + force L/R enable (0x30) so OPL3 output is audible */
     wr(d, bank + 0xC0 + ch, (uint8_t)(adl[12] | 0x30));
 }
@@ -109,10 +114,11 @@ void opl_dev_set_volume(opl_dev *d, int voice, int vol)
 
     int      ch   = voice % 9;
     uint16_t bank = voice_bank(voice);
-    uint8_t  c    = (uint8_t)(OP_OFF[ch] + 3);   /* carrier carries loudness */
+    uint8_t  car  = (uint8_t)(OP_OFF[ch] + 3);   /* carrier carries loudness */
 
-    /* TL is attenuation: 0 = loudest. Preserve the patch's carrier KSL bits. */
-    uint8_t ksl = d->patch[voice][7] & 0xC0;
+    /* TL is attenuation: 0 = loudest. Keep the patch carrier's KSL bits,
+     * which live in adl[1] (the carrier 0x40 byte) per Appendix B.5. */
+    uint8_t ksl = d->patch[voice][1] & 0xC0;
     uint8_t tl  = (uint8_t)((0x3F - vol) & 0x3F);
-    wr(d, bank + 0x40 + c, (uint8_t)(ksl | tl));
+    wr(d, bank + 0x40 + car, (uint8_t)(ksl | tl));
 }

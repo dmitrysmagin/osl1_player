@@ -34,7 +34,10 @@ int main(void)
     int16_t *buf = malloc((size_t)frames * 2 * sizeof(int16_t));
     if (!buf) return 1;
 
-    int silent = 0;
+    /* A real instrument should ring out clearly; treat near-silence as a
+     * failure (an attack-rate/operator-order bug shows up as peak ~0..1). */
+    const int MIN_PEAK = 64;
+    int weak = 0;
     printf("note  block  peak\n");
     for (int note = 36; note <= 60; note++) {
         opl_dev_note_on(&d, 0, note);
@@ -47,13 +50,13 @@ int main(void)
             if (a > peak) peak = a;
         }
         printf(" %3d   %d      %6d%s\n", note, note / 12, peak,
-               peak == 0 ? "  <-- SILENT" : "");
-        if (peak == 0) silent++;
+               peak < MIN_PEAK ? "  <-- too quiet" : "");
+        if (peak < MIN_PEAK) weak++;
     }
 
     free(buf);
-    if (silent) {
-        printf("FAIL: %d note(s) produced silence\n", silent);
+    if (weak) {
+        printf("FAIL: %d note(s) below peak threshold %d\n", weak, MIN_PEAK);
         return 1;
     }
     printf("OK: all notes audible across blocks 3..5\n");
