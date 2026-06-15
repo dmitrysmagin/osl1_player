@@ -1,6 +1,7 @@
 *.o
 *.d
 *.exe
+tmp
 wmplay
 .build_tmp
 *.rsp

@@ -1,12 +1,10 @@
-/* medplay - Phase 0 tone test
+/* medplay - Phase 2 scale test
  *
- * Validates the full audio chain: ADL-patch -> OPL register mapping ->
- * Nuked-OPL3 emulation -> SDL2 output. Plays a C-major arpeggio using a real
- * 16-byte ADL instrument (Appendix B.4) and the Adlib F-number table
- * (Appendix B.3) recovered from ADLIB.DEV.
- *
- * The helpers below (fnum table, ADL->OPL mapping) are deliberately inline for
- * Phase 0; they move into opl_dev.c in Phase 2.
+ * Validates the full audio chain through the clean-room ADLIB.DEV backend:
+ * ADL-patch -> opl_dev (Appendix B) -> Nuked-OPL3 -> SDL2 output. Plays a
+ * two-octave chromatic scale then a C-major arpeggio using a real 16-byte ADL
+ * instrument, exercising the F-number table across several OPL blocks and the
+ * volume (carrier-attenuation) path.
  *
  * Build:  make            (see ../Makefile)
  * Run:    ./medplay.exe [optional path to a 16-byte .ADL instrument]
@@ -17,17 +15,7 @@
 #include <stdint.h>
 #include <SDL.h>
 #include "opl3.h"
-
-/* ---- Adlib note -> OPL frequency (ADLIB.DEV FNUM @0xF61, base 0x157) ------ */
-static const uint16_t FNUM[12] = {
-    0x157, 0x16C, 0x181, 0x198, 0x1B1, 0x1CB,
-    0x1E6, 0x203, 0x222, 0x243, 0x266, 0x28A
-};
-
-/* Per-channel operator base offsets (standard OPL melodic mode, channels 0-8) */
-static const uint8_t OP_OFF[9] = {
-    0x00, 0x01, 0x02, 0x08, 0x09, 0x0A, 0x10, 0x11, 0x12
-};
+#include "opl_dev.h"
 
 /* A real instrument: ADLIB/INST0000.ADL (RE-REPORT section 5.2). */
 static uint8_t g_patch[16] = {
@@ -35,43 +23,6 @@ static uint8_t g_patch[16] = {
     0x3f, 0x52, 0x0b, 0x00, 0x0e, 0x00,
     0x00, 0x00, 0x00, 0x00
 };
-
-/* Upload a 16-byte ADL patch to OPL melodic channel `ch` (Appendix B.4). */
-static void opl_program(opl3_chip *chip, int ch, const uint8_t *adl)
-{
-    uint8_t m = OP_OFF[ch];        /* modulator operator offset */
-    uint8_t c = (uint8_t)(m + 3);  /* carrier operator offset   */
-    OPL3_WriteReg(chip, 0x20 + m, adl[0]);
-    OPL3_WriteReg(chip, 0x40 + m, adl[1]);
-    OPL3_WriteReg(chip, 0x60 + m, adl[2]);
-    OPL3_WriteReg(chip, 0x80 + m, adl[3]);
-    OPL3_WriteReg(chip, 0xE0 + m, adl[4]);
-    OPL3_WriteReg(chip, 0x20 + c, adl[6]);
-    OPL3_WriteReg(chip, 0x40 + c, adl[7]);
-    OPL3_WriteReg(chip, 0x60 + c, adl[8]);
-    OPL3_WriteReg(chip, 0x80 + c, adl[9]);
-    OPL3_WriteReg(chip, 0xE0 + c, adl[10]);
-    /* feedback/algorithm + force L/R enable (0x30) for audible OPL3 output */
-    OPL3_WriteReg(chip, 0xC0 + ch, (uint8_t)(adl[12] | 0x30));
-}
-
-/* Key a note on (note = octave*12 + semitone). */
-static void opl_note_on(opl3_chip *chip, int ch, int note)
-{
-    uint16_t fnum = FNUM[note % 12];
-    uint8_t  block = (uint8_t)(note / 12);
-    OPL3_WriteReg(chip, 0xA0 + ch, (uint8_t)(fnum & 0xFF));
-    OPL3_WriteReg(chip, 0xB0 + ch,
-                  (uint8_t)(((fnum >> 8) & 0x03) | (block << 2) | 0x20 /*KEYON*/));
-}
-
-static void opl_note_off(opl3_chip *chip, int ch, int note)
-{
-    uint16_t fnum = FNUM[note % 12];
-    uint8_t  block = (uint8_t)(note / 12);
-    OPL3_WriteReg(chip, 0xB0 + ch,
-                  (uint8_t)(((fnum >> 8) & 0x03) | (block << 2))); /* KEYON cleared */
-}
 
 /* Render `frames` stereo frames and queue them on the audio device. */
 static int render_queue(SDL_AudioDeviceID dev, opl3_chip *chip, int frames)
@@ -120,22 +71,37 @@ int main(int argc, char **argv)
 
     opl3_chip chip;
     OPL3_Reset(&chip, (uint32_t)have.freq);
-    OPL3_WriteReg(&chip, 0x105, 0x01);   /* enable OPL3 mode (18 channels)   */
-    OPL3_WriteReg(&chip, 0x01, 0x20);    /* enable waveform select (OPL2 cmp) */
-    opl_program(&chip, 0, g_patch);
 
-    const int note_frames = have.freq * 40 / 100;  /* 0.40 s sustain */
-    const int gap_frames  = have.freq * 10 / 100;  /* 0.10 s release */
-    const int notes[] = { 48, 52, 55, 60, 64, 60, 55, 52 }; /* C maj arpeggio */
-    const int n = (int)(sizeof(notes) / sizeof(notes[0]));
+    /* Bring up the Adlib backend in OPL3 mode and load the patch on voice 0. */
+    opl_dev dev_state;
+    opl_dev_init(&dev_state, &chip, 1 /*opl3*/);
+    opl_dev_program(&dev_state, 0, g_patch);
+
+    const int note_frames = have.freq * 25 / 100;  /* 0.25 s sustain */
+    const int gap_frames  = have.freq *  6 / 100;  /* 0.06 s release */
 
     SDL_PauseAudioDevice(dev, 0);
-    for (int i = 0; i < n; i++) {
-        opl_note_on(&chip, 0, notes[i]);
+
+    /* Part 1: two-octave chromatic scale (notes 36..60) crosses OPL blocks. */
+    for (int note = 36; note <= 60; note++) {
+        opl_dev_note_on(&dev_state, 0, note);
         if (render_queue(dev, &chip, note_frames) != 0) {
             fprintf(stderr, "queue: %s\n", SDL_GetError()); break;
         }
-        opl_note_off(&chip, 0, notes[i]);
+        opl_dev_note_off(&dev_state, 0);
+        render_queue(dev, &chip, gap_frames);
+    }
+
+    /* Part 2: C-major arpeggio with a descending volume ramp (effect 0x0C). */
+    const int arp[] = { 48, 52, 55, 60, 64, 60, 55, 52 };
+    const int n = (int)(sizeof(arp) / sizeof(arp[0]));
+    for (int i = 0; i < n; i++) {
+        opl_dev_set_volume(&dev_state, 0, 63 - i * 7);   /* 63,56,...,14 */
+        opl_dev_note_on(&dev_state, 0, arp[i]);
+        if (render_queue(dev, &chip, note_frames) != 0) {
+            fprintf(stderr, "queue: %s\n", SDL_GetError()); break;
+        }
+        opl_dev_note_off(&dev_state, 0);
         render_queue(dev, &chip, gap_frames);
     }
 

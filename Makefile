@@ -31,7 +31,7 @@ CFLAGS  = $(OPT) $(CSTD) $(WARN) $(SDL_CFLAGS)
 LDLIBS  = $(SDL_LIBS)
 
 BIN  = medplay.exe
-SRC  = src/main.c src/opl3.c
+SRC  = src/main.c src/opl3.c src/opl_dev.c
 OBJ  = $(SRC:.c=.o)
 
 # Parser parity tool (no SDL needed): tools/osl1_dump.c + src/osl1.c
@@ -52,10 +52,18 @@ $(DUMP_BIN): $(DUMP_SRC)
 
 dump: $(DUMP_BIN)
 
+# opl_scale: headless backend check (opl_dev + opl3, no SDL).
+SCALE_BIN = opl_scale.exe
+SCALE_SRC = tools/opl_scale.c src/opl_dev.c src/opl3.c
+$(SCALE_BIN): $(SCALE_SRC)
+	$(CC) $(OPT) $(CSTD) $(WARN) $^ -o $@
+
+scale: $(SCALE_BIN)
+
 run: $(BIN)
 	./$(BIN)
 
 clean:
-	rm -f $(OBJ) $(BIN) $(DUMP_BIN)
+	rm -f $(OBJ) $(BIN) $(DUMP_BIN) $(SCALE_BIN)
 
-.PHONY: all run dump clean
+.PHONY: all run dump scale clean
