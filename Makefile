@@ -8,6 +8,13 @@
 #   make clean      remove build artefacts
 #
 # Override the compiler if needed, e.g.:  make CC=x86_64-w64-mingw32-gcc
+#
+# Build note (mixed-toolchain environments): use the UCRT64 `mingw32-make`,
+# not MSYS2's `/usr/bin/make`. The POSIX make spawns recipes under /bin/sh,
+# which (a) resolves sdl2-config from whatever is first on PATH (e.g. Git's
+# bundled toolchain) and (b) sets TMP=/tmp, which native gcc cannot use and
+# then falls back to an unwritable C:\WINDOWS. `mingw32-make` runs recipes
+# natively and avoids both problems.
 
 # Note: plain `?=` won't override make's builtin CC=cc, so use `=`.
 # Override on the command line if needed: make CC=x86_64-w64-mingw32-gcc
@@ -27,6 +34,10 @@ BIN  = medplay.exe
 SRC  = src/main.c src/opl3.c
 OBJ  = $(SRC:.c=.o)
 
+# Parser parity tool (no SDL needed): tools/osl1_dump.c + src/osl1.c
+DUMP_BIN = osl1_dump.exe
+DUMP_SRC = tools/osl1_dump.c src/osl1.c
+
 all: $(BIN)
 
 $(BIN): $(OBJ)
@@ -35,10 +46,16 @@ $(BIN): $(OBJ)
 src/%.o: src/%.c
 	$(CC) $(CFLAGS) -c $< -o $@
 
+# osl1_dump links only the parser; SDL flags are harmless but unused.
+$(DUMP_BIN): $(DUMP_SRC)
+	$(CC) $(OPT) $(CSTD) $(WARN) $^ -o $@
+
+dump: $(DUMP_BIN)
+
 run: $(BIN)
 	./$(BIN)
 
 clean:
-	rm -f $(OBJ) $(BIN)
+	rm -f $(OBJ) $(BIN) $(DUMP_BIN)
 
-.PHONY: all run clean
+.PHONY: all run dump clean
