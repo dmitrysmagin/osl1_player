@@ -89,8 +89,15 @@ static void decode_row(Replay *r)
 
     uint8_t  pat  = blk->order[r->order_idx];    /* order table @block+0x50 */
     uint32_t poff = blk->pos_ptr[pat];           /* pos-ptr table @+0x150  */
-    if (poff + 4 > song->size) return;           /* malformed: bail        */
-    const uint8_t *base = song->raw + poff;
+    if (poff + 6 > song->size) return;           /* malformed: bail        */
+
+    /* Each position record is [u16 length][u16 header][u16 bp][data...]. The
+     * pos-ptr table points at the 2-byte length prefix (used by the editor to
+     * skip positions); the replay header the engine decodes begins right after
+     * it. Verified empirically: at pos_ptr+2 the header always has bit 0x8000
+     * set and the bp word equals the position's cell/voice count (e.g. SAVAGE
+     * .SCC bp=4, OD1.ALB bp=7). */
+    const uint8_t *base = song->raw + poff + 2;  /* skip the length prefix */
 
     uint16_t hdr = ru16(base);
     if (!(hdr & 0x8000)) {

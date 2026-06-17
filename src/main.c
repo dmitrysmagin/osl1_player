@@ -30,6 +30,26 @@ static uint8_t g_patch[16] = {
 #define WAV_RATE  49716u
 #define TICK_HZ   50u
 
+/* Fractional samples-per-tick (49716/50 = 994.32): a double accumulator keeps
+ * the long-run rate exact instead of dropping 0.32 frames every tick. */
+#define SAMPLES_PER_TICK ((double)WAV_RATE / (double)TICK_HZ)
+
+/* OPL2 (9 voices) is enough for <=9 tracks; switch to OPL3 (18) above that. */
+static int opl3_needed(const Song *song)
+{
+    return song->blk.track_count > 9;
+}
+
+/* Program every replay voice. The embedded song instruments are higher-level
+ * descriptors (GM-named for SCC, compact for ALB) that the DOS device drivers
+ * expand via an internal bank; that expansion is not yet reverse-engineered, so
+ * we fall back to a known-good standalone ADL patch for an audible timbre. */
+static void program_voices(opl_dev *dev, const Replay *r)
+{
+    for (int v = 0; v < r->voice_count; v++)
+        opl_dev_program(dev, v, g_patch);
+}
+
 /* Write a 16-bit stereo little-endian WAV. Returns 0 on success. */
 static int write_wav(const char *path, const int16_t *pcm,
                      size_t frames, uint32_t rate)
@@ -83,17 +103,19 @@ static int render_wav(const char *wavpath, const char *songpath)
     OPL3_Reset(&chip, WAV_RATE);
 
     opl_dev dev;
-    opl_dev_init(&dev, &chip, 1 /*opl3*/);
+    opl_dev_init(&dev, &chip, opl3_needed(&song));
 
     Replay r;
     replay_init(&r, &song, 6);
-    for (int v = 0; v < r.voice_count; v++)
-        opl_dev_program(&dev, v, g_patch);   /* known-good patch on each voice */
+    program_voices(&dev, &r);             /* known-good patch on each voice */
 
-    const uint32_t frames_per_tick = WAV_RATE / TICK_HZ;     /* ~994 */
-    const size_t   max_frames = (size_t)WAV_RATE * 120;      /* 120 s safety cap */
+    const size_t max_frames = (size_t)WAV_RATE * 120;        /* 120 s safety cap */
 
-    size_t cap = frames_per_tick * 64;
+    /* Fractional samples-per-tick accumulator: carry the 0.32-frame remainder
+     * across ticks so the long-run sample rate stays exact (no drift). */
+    double accum = 0.0;
+
+    size_t cap = (size_t)(SAMPLES_PER_TICK * 64);
     int16_t *pcm = malloc(cap * 2 * sizeof(int16_t));
     if (!pcm) { osl1_free(&song); return 1; }
     size_t frames = 0;
@@ -101,14 +123,19 @@ static int render_wav(const char *wavpath, const char *songpath)
     while (!r.finished && frames < max_frames) {
         replay_tick(&r, &dev);
 
-        if ((frames + frames_per_tick) * 2 > cap * 2) {     /* grow buffer */
+        accum += SAMPLES_PER_TICK;
+        uint32_t n = (uint32_t)accum;       /* whole frames to emit this tick */
+        accum -= n;
+
+        if ((frames + n) * 2 > cap * 2) {                   /* grow buffer */
             size_t ncap = cap * 2;
+            while ((frames + n) * 2 > ncap * 2) ncap *= 2;
             int16_t *np = realloc(pcm, ncap * 2 * sizeof(int16_t));
             if (!np) break;
             pcm = np; cap = ncap;
         }
-        OPL3_GenerateStream(&chip, pcm + frames * 2, frames_per_tick);
-        frames += frames_per_tick;
+        OPL3_GenerateStream(&chip, pcm + frames * 2, n);
+        frames += n;
     }
 
     printf("rendered %zu frames (%.2f s), finished=%d\n",
@@ -134,20 +161,137 @@ static int render_queue(SDL_AudioDeviceID dev, opl3_chip *chip, int frames)
     return rc;
 }
 
+/* Live playback: drive the replay engine in real time and stream to SDL.
+ *
+ * Queue mode (no audio callback / no threads): each loop iteration runs as many
+ * replay ticks as are needed to keep ~LIVE_AHEAD_S of audio queued, rendering
+ * the fractional samples-per-tick for each. SDL paces us via the queue size, so
+ * the wall-clock playback rate matches the 50 Hz tick exactly. */
+static int play_live(const char *songpath, int speed)
+{
+    Song song;
+    char err[256];
+    if (osl1_load(songpath, &song, err, sizeof(err)) != 0) {
+        fprintf(stderr, "load %s: %s\n", songpath, err);
+        return 1;
+    }
+    printf("song: \"%s\" device=%s tracks=%u orders=%u\n",
+           song.title, osl1_device_name(song.device),
+           song.blk.track_count, song.blk.order_count);
+
+    if (SDL_Init(SDL_INIT_AUDIO) != 0) {
+        fprintf(stderr, "SDL_Init: %s\n", SDL_GetError());
+        osl1_free(&song);
+        return 1;
+    }
+
+    SDL_AudioSpec want, have;
+    SDL_zero(want);
+    want.freq     = WAV_RATE;
+    want.format   = AUDIO_S16SYS;
+    want.channels = 2;
+    want.samples  = 1024;
+    want.callback = NULL;                /* queue mode */
+
+    SDL_AudioDeviceID adev =
+        SDL_OpenAudioDevice(NULL, 0, &want, &have, 0);
+    if (!adev) {
+        fprintf(stderr, "SDL_OpenAudioDevice: %s\n", SDL_GetError());
+        SDL_Quit();
+        osl1_free(&song);
+        return 1;
+    }
+    printf("audio: %d Hz, %d ch (OPL%d, %u voices)\n",
+           have.freq, have.channels, opl3_needed(&song) ? 3 : 2,
+           song.blk.track_count);
+
+    opl3_chip chip;
+    OPL3_Reset(&chip, (uint32_t)have.freq);
+
+    opl_dev dev;
+    opl_dev_init(&dev, &chip, opl3_needed(&song));
+
+    Replay r;
+    replay_init(&r, &song, speed);
+    program_voices(&dev, &r);
+
+    /* Keep this many seconds of audio buffered ahead of the play cursor. */
+    const Uint32 ahead_bytes =
+        (Uint32)(0.20 * have.freq) * 2u * (Uint32)sizeof(int16_t);
+
+    double accum = 0.0;
+    SDL_PauseAudioDevice(adev, 0);
+
+    while (!r.finished) {
+        if (SDL_GetQueuedAudioSize(adev) >= ahead_bytes) {
+            SDL_Delay(5);                /* queue full enough: let it drain */
+            continue;
+        }
+
+        replay_tick(&r, &dev);
+
+        accum += SAMPLES_PER_TICK;
+        uint32_t n = (uint32_t)accum;
+        accum -= n;
+
+        int16_t buf[1024 * 2];           /* one tick is ~994 frames < 1024  */
+        if (n > 1024) n = 1024;
+        OPL3_GenerateStream(&chip, buf, n);
+        if (SDL_QueueAudio(adev, buf, n * 2u * (Uint32)sizeof(int16_t)) != 0) {
+            fprintf(stderr, "queue: %s\n", SDL_GetError());
+            break;
+        }
+    }
+
+    /* Drain whatever is still queued. */
+    while (SDL_GetQueuedAudioSize(adev) > 0)
+        SDL_Delay(20);
+    SDL_Delay(100);
+
+    SDL_CloseAudioDevice(adev);
+    SDL_Quit();
+    osl1_free(&song);
+    printf("done\n");
+    return 0;
+}
+
+/* Legacy standalone scale/arpeggio demo. `patch_path` may be NULL. */
+static int play_scale_demo(const char *patch_path);
+
 int main(int argc, char **argv)
 {
     /* Offline render mode: medplay --wav <out.wav> <songfile> */
     if (argc >= 4 && strcmp(argv[1], "--wav") == 0)
         return render_wav(argv[2], argv[3]);
 
+    /* Standalone scale demo:  medplay --scale [patch.adl] */
+    if (argc >= 2 && strcmp(argv[1], "--scale") == 0)
+        return play_scale_demo(argc >= 3 ? argv[2] : NULL);
+
+    /* Live playback of a song file:  medplay <songfile> [speed] */
+    if (argc >= 2) {
+        int speed = argc >= 3 ? atoi(argv[2]) : 6;
+        return play_live(argv[1], speed > 0 ? speed : 6);
+    }
+
+    fprintf(stderr,
+            "usage:\n"
+            "  medplay <songfile> [speed]      live playback\n"
+            "  medplay --wav <out.wav> <song>  offline render to WAV\n"
+            "  medplay --scale [patch.adl]     standalone scale demo\n");
+    return 2;
+}
+
+static int play_scale_demo(const char *patch_path)
+{
     /* Optionally load a real ADL instrument from disk. */
-    if (argc > 1) {
-        FILE *f = fopen(argv[1], "rb");
-        if (!f) { fprintf(stderr, "cannot open %s\n", argv[1]); return 1; }
+    if (patch_path) {
+        FILE *f = fopen(patch_path, "rb");
+        if (!f) { fprintf(stderr, "cannot open %s\n", patch_path); return 1; }
         if (fread(g_patch, 1, 16, f) != 16)
-            fprintf(stderr, "warning: %s is not 16 bytes\n", argv[1]);
+            fprintf(stderr, "warning: %s is not 16 bytes\n", patch_path);
         fclose(f);
-        printf("loaded patch from %s\n", argv[1]);
+        printf("loaded patch from %s\n", patch_path);
     }
 
     if (SDL_Init(SDL_INIT_AUDIO) != 0) {
