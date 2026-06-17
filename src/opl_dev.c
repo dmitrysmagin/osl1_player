@@ -24,7 +24,13 @@ static uint16_t voice_bank(int voice) { return voice >= 9 ? 0x100 : 0x000; }
 
 static void wr(opl_dev *d, uint16_t reg, uint8_t val)
 {
+    if (d->trace) fprintf(d->trace, "%03X=%02X\n", reg, val);
     OPL3_WriteReg(d->chip, reg, val);
+}
+
+void opl_dev_set_trace(opl_dev *d, FILE *f)
+{
+    d->trace = f;
 }
 
 void opl_dev_init(opl_dev *d, opl3_chip *chip, int opl3_mode)

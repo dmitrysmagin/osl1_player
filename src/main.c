@@ -13,11 +13,23 @@
 #include <stdlib.h>
 #include <string.h>
 #include <stdint.h>
+#include <dirent.h>
+#include <sys/stat.h>
 #include <SDL.h>
 #include "opl3.h"
 #include "opl_dev.h"
 #include "osl1.h"
 #include "replay.h"
+
+/* Playback options parsed from the command line (Phase 6). */
+typedef struct {
+    const char *wav;     /* WAV output path/dir, or NULL for live playback   */
+    const char *trace;   /* OPL register-trace output path, or NULL          */
+    int         rate;    /* output sample rate (Hz)                          */
+    int         opl3;    /* -1 = auto (track_count>9), 0 = OPL2, 1 = OPL3     */
+    int         speed;   /* initial ticks/row (effect 0x09 may change it)    */
+    int         status;  /* 1 = print a progress/status line                 */
+} Options;
 
 /* A real instrument: ADLIB/INST0000.ADL (RE-REPORT section 5.2). */
 static uint8_t g_patch[16] = {
@@ -87,7 +99,8 @@ static int write_wav(const char *path, const int16_t *pcm,
 /* Offline render: drive the replay engine and bake a WAV. No SDL/audio device
  * needed. Uses a known-good standalone ADL patch on every voice (the embedded
  * song-instrument upload path is deferred to a later phase). */
-static int render_wav(const char *wavpath, const char *songpath)
+static int render_wav(const char *songpath, const char *wavpath,
+                      const Options *opt)
 {
     Song song;
     char err[256];
@@ -95,36 +108,52 @@ static int render_wav(const char *wavpath, const char *songpath)
         fprintf(stderr, "load %s: %s\n", songpath, err);
         return 1;
     }
-    printf("song: \"%s\" device=%s tracks=%u orders=%u\n",
+    int use_opl3 = opt->opl3 < 0 ? opl3_needed(&song) : opt->opl3;
+    uint32_t rate = (uint32_t)opt->rate;
+    printf("song: \"%s\" device=%s tracks=%u orders=%u (OPL%d, %u Hz)\n",
            song.title, osl1_device_name(song.device),
-           song.blk.track_count, song.blk.order_count);
+           song.blk.track_count, song.blk.order_count,
+           use_opl3 ? 3 : 2, rate);
 
     opl3_chip chip;
-    OPL3_Reset(&chip, WAV_RATE);
+    OPL3_Reset(&chip, rate);
 
     opl_dev dev;
-    opl_dev_init(&dev, &chip, opl3_needed(&song));
+    opl_dev_init(&dev, &chip, use_opl3);
+
+    FILE *tracef = NULL;
+    if (opt->trace) {
+        tracef = fopen(opt->trace, "w");
+        if (!tracef) fprintf(stderr, "warning: cannot open trace %s\n", opt->trace);
+        else opl_dev_set_trace(&dev, tracef);
+    }
 
     Replay r;
-    replay_init(&r, &song, 6);
+    replay_init(&r, &song, opt->speed);
     program_voices(&dev, &r);             /* known-good patch on each voice */
 
-    const size_t max_frames = (size_t)WAV_RATE * 120;        /* 120 s safety cap */
+    const size_t max_frames = (size_t)rate * 120;            /* 120 s safety cap */
 
-    /* Fractional samples-per-tick accumulator: carry the 0.32-frame remainder
+    /* Fractional samples-per-tick accumulator: carry the sub-frame remainder
      * across ticks so the long-run sample rate stays exact (no drift). */
     double accum = 0.0;
 
-    size_t cap = (size_t)(SAMPLES_PER_TICK * 64);
+    size_t cap = (size_t)((double)rate / TICK_HZ * 64);
     int16_t *pcm = malloc(cap * 2 * sizeof(int16_t));
-    if (!pcm) { osl1_free(&song); return 1; }
+    if (!pcm) { osl1_free(&song); if (tracef) fclose(tracef); return 1; }
     size_t frames = 0;
+    int last_order = -1;
 
     while (!r.finished && frames < max_frames) {
         replay_tick(&r, &dev);
 
+        if (opt->status && (int)r.order_idx != last_order) {
+            last_order = (int)r.order_idx;
+            printf("  order %u/%u\n", r.order_idx, r.order_len);
+        }
+
         /* Tempo (effect 0x0F) sets the tick rate; recompute per tick. */
-        accum += (double)WAV_RATE / (r.tempo ? r.tempo : TICK_HZ);
+        accum += (double)rate / (r.tempo ? r.tempo : TICK_HZ);
         uint32_t n = (uint32_t)accum;       /* whole frames to emit this tick */
         accum -= n;
 
@@ -140,13 +169,14 @@ static int render_wav(const char *wavpath, const char *songpath)
     }
 
     printf("rendered %zu frames (%.2f s), finished=%d\n",
-           frames, (double)frames / WAV_RATE, r.finished);
+           frames, (double)frames / rate, r.finished);
 
-    int rc = write_wav(wavpath, pcm, frames, WAV_RATE);
+    int rc = write_wav(wavpath, pcm, frames, rate);
     if (rc == 0) printf("wrote %s\n", wavpath);
     else fprintf(stderr, "failed to write %s\n", wavpath);
 
     free(pcm);
+    if (tracef) fclose(tracef);
     osl1_free(&song);
     return rc == 0 ? 0 : 1;
 }
@@ -168,7 +198,7 @@ static int render_queue(SDL_AudioDeviceID dev, opl3_chip *chip, int frames)
  * replay ticks as are needed to keep ~LIVE_AHEAD_S of audio queued, rendering
  * the fractional samples-per-tick for each. SDL paces us via the queue size, so
  * the wall-clock playback rate matches the 50 Hz tick exactly. */
-static int play_live(const char *songpath, int speed)
+static int play_live(const char *songpath, const Options *opt)
 {
     Song song;
     char err[256];
@@ -176,6 +206,7 @@ static int play_live(const char *songpath, int speed)
         fprintf(stderr, "load %s: %s\n", songpath, err);
         return 1;
     }
+    int use_opl3 = opt->opl3 < 0 ? opl3_needed(&song) : opt->opl3;
     printf("song: \"%s\" device=%s tracks=%u orders=%u\n",
            song.title, osl1_device_name(song.device),
            song.blk.track_count, song.blk.order_count);
@@ -188,7 +219,7 @@ static int play_live(const char *songpath, int speed)
 
     SDL_AudioSpec want, have;
     SDL_zero(want);
-    want.freq     = WAV_RATE;
+    want.freq     = opt->rate;
     want.format   = AUDIO_S16SYS;
     want.channels = 2;
     want.samples  = 1024;
@@ -203,17 +234,24 @@ static int play_live(const char *songpath, int speed)
         return 1;
     }
     printf("audio: %d Hz, %d ch (OPL%d, %u voices)\n",
-           have.freq, have.channels, opl3_needed(&song) ? 3 : 2,
+           have.freq, have.channels, use_opl3 ? 3 : 2,
            song.blk.track_count);
 
     opl3_chip chip;
     OPL3_Reset(&chip, (uint32_t)have.freq);
 
     opl_dev dev;
-    opl_dev_init(&dev, &chip, opl3_needed(&song));
+    opl_dev_init(&dev, &chip, use_opl3);
+
+    FILE *tracef = NULL;
+    if (opt->trace) {
+        tracef = fopen(opt->trace, "w");
+        if (!tracef) fprintf(stderr, "warning: cannot open trace %s\n", opt->trace);
+        else opl_dev_set_trace(&dev, tracef);
+    }
 
     Replay r;
-    replay_init(&r, &song, speed);
+    replay_init(&r, &song, opt->speed);
     program_voices(&dev, &r);
 
     /* Keep this many seconds of audio buffered ahead of the play cursor. */
@@ -221,10 +259,18 @@ static int play_live(const char *songpath, int speed)
         (Uint32)(0.20 * have.freq) * 2u * (Uint32)sizeof(int16_t);
 
     double accum = 0.0;
+    Uint32 next_status = 0;
     SDL_PauseAudioDevice(adev, 0);
 
     while (!r.finished) {
         if (SDL_GetQueuedAudioSize(adev) >= ahead_bytes) {
+            if (opt->status && SDL_GetTicks() >= next_status) {
+                next_status = SDL_GetTicks() + 200;
+                printf("\r  order %2u/%-2u  row %3u/%-3u  speed %u  tempo %u   ",
+                       r.order_idx, r.order_len, r.pos, r.row_limit,
+                       r.speed, r.tempo);
+                fflush(stdout);
+            }
             SDL_Delay(5);                /* queue full enough: let it drain */
             continue;
         }
@@ -249,8 +295,10 @@ static int play_live(const char *songpath, int speed)
         SDL_Delay(20);
     SDL_Delay(100);
 
+    if (opt->status) printf("\n");
     SDL_CloseAudioDevice(adev);
     SDL_Quit();
+    if (tracef) fclose(tracef);
     osl1_free(&song);
     printf("done\n");
     return 0;
@@ -259,28 +307,110 @@ static int play_live(const char *songpath, int speed)
 /* Legacy standalone scale/arpeggio demo. `patch_path` may be NULL. */
 static int play_scale_demo(const char *patch_path);
 
+static int path_is_dir(const char *p)
+{
+    struct stat st;
+    return stat(p, &st) == 0 && S_ISDIR(st.st_mode);
+}
+
+/* Play (or render) every parseable song in a directory, in readdir order.
+ * Files osl1 cannot parse (e.g. 16-byte instrument files) are skipped. When
+ * --wav is given, `opt->wav` is treated as an output directory and each song
+ * is rendered to <wavdir>/<name>.wav. */
+static int render_wav(const char *songpath, const char *wavpath, const Options *opt);
+static int play_live(const char *songpath, const Options *opt);
+
+static int play_directory(const char *dir, const Options *opt)
+{
+    DIR *d = opendir(dir);
+    if (!d) { fprintf(stderr, "cannot open dir %s\n", dir); return 1; }
+
+    struct dirent *e;
+    int count = 0, rc = 0;
+    while ((e = readdir(d)) != NULL) {
+        char path[1024];
+        snprintf(path, sizeof path, "%s/%s", dir, e->d_name);
+
+        struct stat st;
+        if (stat(path, &st) != 0 || !S_ISREG(st.st_mode)) continue;
+
+        /* Probe: only handle files the parser accepts. */
+        Song probe; char err[256];
+        if (osl1_load(path, &probe, err, sizeof err) != 0) continue;
+        osl1_free(&probe);
+
+        printf("=== [%d] %s ===\n", ++count, e->d_name);
+        if (opt->wav) {
+            char wav[1024];
+            snprintf(wav, sizeof wav, "%s/%s.wav", opt->wav, e->d_name);
+            rc |= render_wav(path, wav, opt);
+        } else {
+            rc |= play_live(path, opt);
+        }
+    }
+    closedir(d);
+    if (!count) { fprintf(stderr, "no playable songs in %s\n", dir); return 1; }
+    return rc;
+}
+
+static void usage(void)
+{
+    fprintf(stderr,
+        "medplay - OSL1/Adlib player (OPL2/OPL3 via Nuked-OPL3)\n\n"
+        "usage:\n"
+        "  medplay <song|dir> [options]      live playback\n"
+        "  medplay --wav <out> <song>        render one song to a WAV file\n"
+        "  medplay --wav <dir> <songdir>     render every song in <songdir>\n"
+        "  medplay --scale [patch.adl]       standalone scale/arpeggio demo\n\n"
+        "options:\n"
+        "  --wav <path>     offline render (file for a song, dir for a dir)\n"
+        "  --trace <file>   log every OPL register write (RRR=VV) for diffing\n"
+        "  --rate <hz>      output sample rate (default 49716)\n"
+        "  --opl2 / --opl3  force OPL2 (9 voices) or OPL3 (18); default: auto\n"
+        "  --speed <n>      initial ticks/row (default 6)\n"
+        "  --status         print a progress/status line\n");
+}
+
 int main(int argc, char **argv)
 {
-    /* Offline render mode: medplay --wav <out.wav> <songfile> */
-    if (argc >= 4 && strcmp(argv[1], "--wav") == 0)
-        return render_wav(argv[2], argv[3]);
+    Options opt;
+    opt.wav = NULL; opt.trace = NULL; opt.rate = WAV_RATE;
+    opt.opl3 = -1;  opt.speed = 6;     opt.status = 0;
 
-    /* Standalone scale demo:  medplay --scale [patch.adl] */
-    if (argc >= 2 && strcmp(argv[1], "--scale") == 0)
-        return play_scale_demo(argc >= 3 ? argv[2] : NULL);
+    const char *input = NULL;
+    int scale_mode = 0;
 
-    /* Live playback of a song file:  medplay <songfile> [speed] */
-    if (argc >= 2) {
-        int speed = argc >= 3 ? atoi(argv[2]) : 6;
-        return play_live(argv[1], speed > 0 ? speed : 6);
+    for (int i = 1; i < argc; i++) {
+        const char *a = argv[i];
+        if      (!strcmp(a, "--wav")   && i + 1 < argc) opt.wav   = argv[++i];
+        else if (!strcmp(a, "--trace") && i + 1 < argc) opt.trace = argv[++i];
+        else if (!strcmp(a, "--rate")  && i + 1 < argc) opt.rate  = atoi(argv[++i]);
+        else if (!strcmp(a, "--speed") && i + 1 < argc) opt.speed = atoi(argv[++i]);
+        else if (!strcmp(a, "--opl2"))                  opt.opl3  = 0;
+        else if (!strcmp(a, "--opl3"))                  opt.opl3  = 1;
+        else if (!strcmp(a, "--status"))                opt.status = 1;
+        else if (!strcmp(a, "--scale"))                 scale_mode = 1;
+        else if (a[0] == '-') { fprintf(stderr, "unknown option: %s\n", a); usage(); return 2; }
+        else if (!input)                                input = a;
+        else { fprintf(stderr, "unexpected argument: %s\n", a); return 2; }
     }
 
-    fprintf(stderr,
-            "usage:\n"
-            "  medplay <songfile> [speed]      live playback\n"
-            "  medplay --wav <out.wav> <song>  offline render to WAV\n"
-            "  medplay --scale [patch.adl]     standalone scale demo\n");
-    return 2;
+    if (opt.rate  <= 0) opt.rate  = WAV_RATE;
+    if (opt.speed <= 0) opt.speed = 6;
+
+    if (scale_mode)
+        return play_scale_demo(input);    /* input, if any, is the patch path */
+
+    if (!input) { usage(); return 2; }
+
+    if (path_is_dir(input))
+        return play_directory(input, &opt);
+
+    if (opt.wav)
+        return render_wav(input, opt.wav, &opt);
+
+    opt.status = 1;                       /* status line on by default for live */
+    return play_live(input, &opt);
 }
 
 static int play_scale_demo(const char *patch_path)

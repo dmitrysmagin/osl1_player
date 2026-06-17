@@ -12,6 +12,7 @@
 #define MEDPLAY_OPL_DEV_H
 
 #include <stdint.h>
+#include <stdio.h>
 #include "opl3.h"
 
 #define OPL_DEV_MAX_VOICES 18
@@ -24,6 +25,7 @@ typedef struct {
     uint8_t    vol[OPL_DEV_MAX_VOICES];       /* per-voice volume 0..63 (0x682) */
     uint8_t    shadow_a0[OPL_DEV_MAX_VOICES]; /* reg 0xA0 shadow (0x355)    */
     uint8_t    shadow_b0[OPL_DEV_MAX_VOICES]; /* reg 0xB0 shadow (0x365)    */
+    FILE      *trace;            /* if set, log every register write here   */
 } opl_dev;
 
 /* Reset the chip and bring the device up. `opl3_mode` selects 18-voice OPL3.
@@ -41,5 +43,9 @@ void opl_dev_note_off(opl_dev *d, int voice);
 
 /* Set channel volume 0..63 (carrier attenuation; effect 0x0C, RE B.5). */
 void opl_dev_set_volume(opl_dev *d, int voice, int vol);
+
+/* Route every subsequent register write to `f` as `RRR=VV` text (one per line)
+ * for diffing against a DOSBox OPL capture (PLAN.md §10). NULL disables. */
+void opl_dev_set_trace(opl_dev *d, FILE *f);
 
 #endif /* MEDPLAY_OPL_DEV_H */
