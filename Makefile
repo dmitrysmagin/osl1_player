@@ -31,7 +31,7 @@ CFLAGS  = $(OPT) $(CSTD) $(WARN) $(SDL_CFLAGS)
 LDLIBS  = $(SDL_LIBS)
 
 BIN  = medplay.exe
-SRC  = src/main.c src/opl3.c src/opl_dev.c
+SRC  = src/main.c src/opl3.c src/opl_dev.c src/osl1.c src/replay.c
 OBJ  = $(SRC:.c=.o)
 
 # Parser parity tool (no SDL needed): tools/osl1_dump.c + src/osl1.c
@@ -60,10 +60,18 @@ $(SCALE_BIN): $(SCALE_SRC)
 
 scale: $(SCALE_BIN)
 
+# decode_dump: headless replay-decoder validation (osl1 + replay + opl_dev + opl3, no SDL).
+DECODE_BIN = decode_dump.exe
+DECODE_SRC = tools/decode_dump.c src/osl1.c src/replay.c src/opl_dev.c src/opl3.c
+$(DECODE_BIN): $(DECODE_SRC)
+	$(CC) $(OPT) $(CSTD) $(WARN) $^ -o $@
+
+decode: $(DECODE_BIN)
+
 run: $(BIN)
 	./$(BIN)
 
 clean:
-	rm -f $(OBJ) $(BIN) $(DUMP_BIN) $(SCALE_BIN)
+	rm -f $(OBJ) $(BIN) $(DUMP_BIN) $(SCALE_BIN) $(DECODE_BIN)
 
-.PHONY: all run dump scale clean
+.PHONY: all run dump scale decode clean

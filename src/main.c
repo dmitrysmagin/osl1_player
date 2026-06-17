@@ -16,6 +16,8 @@
 #include <SDL.h>
 #include "opl3.h"
 #include "opl_dev.h"
+#include "osl1.h"
+#include "replay.h"
 
 /* A real instrument: ADLIB/INST0000.ADL (RE-REPORT section 5.2). */
 static uint8_t g_patch[16] = {
@@ -23,6 +25,103 @@ static uint8_t g_patch[16] = {
     0x3f, 0x52, 0x0b, 0x00, 0x0e, 0x00,
     0x00, 0x00, 0x00, 0x00
 };
+
+/* Native Nuked-OPL3 sample rate; the DOS engine ticks at 50 Hz. */
+#define WAV_RATE  49716u
+#define TICK_HZ   50u
+
+/* Write a 16-bit stereo little-endian WAV. Returns 0 on success. */
+static int write_wav(const char *path, const int16_t *pcm,
+                     size_t frames, uint32_t rate)
+{
+    FILE *f = fopen(path, "wb");
+    if (!f) return -1;
+
+    uint32_t data_bytes = (uint32_t)(frames * 2u * sizeof(int16_t));
+    uint32_t byte_rate  = rate * 2u * (uint32_t)sizeof(int16_t);
+    uint16_t block_align = (uint16_t)(2u * sizeof(int16_t));
+
+    /* Helpers writing little-endian fields. */
+    uint8_t hdr[44];
+    memcpy(hdr + 0,  "RIFF", 4);
+    uint32_t riff = 36u + data_bytes;
+    hdr[4]=(uint8_t)riff; hdr[5]=(uint8_t)(riff>>8); hdr[6]=(uint8_t)(riff>>16); hdr[7]=(uint8_t)(riff>>24);
+    memcpy(hdr + 8,  "WAVE", 4);
+    memcpy(hdr + 12, "fmt ", 4);
+    hdr[16]=16; hdr[17]=0; hdr[18]=0; hdr[19]=0;     /* fmt chunk size = 16 */
+    hdr[20]=1;  hdr[21]=0;                            /* PCM                 */
+    hdr[22]=2;  hdr[23]=0;                            /* channels = 2        */
+    hdr[24]=(uint8_t)rate; hdr[25]=(uint8_t)(rate>>8); hdr[26]=(uint8_t)(rate>>16); hdr[27]=(uint8_t)(rate>>24);
+    hdr[28]=(uint8_t)byte_rate; hdr[29]=(uint8_t)(byte_rate>>8); hdr[30]=(uint8_t)(byte_rate>>16); hdr[31]=(uint8_t)(byte_rate>>24);
+    hdr[32]=(uint8_t)block_align; hdr[33]=(uint8_t)(block_align>>8);
+    hdr[34]=16; hdr[35]=0;                            /* bits per sample     */
+    memcpy(hdr + 36, "data", 4);
+    hdr[40]=(uint8_t)data_bytes; hdr[41]=(uint8_t)(data_bytes>>8); hdr[42]=(uint8_t)(data_bytes>>16); hdr[43]=(uint8_t)(data_bytes>>24);
+
+    int ok = (fwrite(hdr, 1, 44, f) == 44) &&
+             (fwrite(pcm, 1, data_bytes, f) == data_bytes);
+    fclose(f);
+    return ok ? 0 : -1;
+}
+
+/* Offline render: drive the replay engine and bake a WAV. No SDL/audio device
+ * needed. Uses a known-good standalone ADL patch on every voice (the embedded
+ * song-instrument upload path is deferred to a later phase). */
+static int render_wav(const char *wavpath, const char *songpath)
+{
+    Song song;
+    char err[256];
+    if (osl1_load(songpath, &song, err, sizeof(err)) != 0) {
+        fprintf(stderr, "load %s: %s\n", songpath, err);
+        return 1;
+    }
+    printf("song: \"%s\" device=%s tracks=%u orders=%u\n",
+           song.title, osl1_device_name(song.device),
+           song.blk.track_count, song.blk.order_count);
+
+    opl3_chip chip;
+    OPL3_Reset(&chip, WAV_RATE);
+
+    opl_dev dev;
+    opl_dev_init(&dev, &chip, 1 /*opl3*/);
+
+    Replay r;
+    replay_init(&r, &song, 6);
+    for (int v = 0; v < r.voice_count; v++)
+        opl_dev_program(&dev, v, g_patch);   /* known-good patch on each voice */
+
+    const uint32_t frames_per_tick = WAV_RATE / TICK_HZ;     /* ~994 */
+    const size_t   max_frames = (size_t)WAV_RATE * 120;      /* 120 s safety cap */
+
+    size_t cap = frames_per_tick * 64;
+    int16_t *pcm = malloc(cap * 2 * sizeof(int16_t));
+    if (!pcm) { osl1_free(&song); return 1; }
+    size_t frames = 0;
+
+    while (!r.finished && frames < max_frames) {
+        replay_tick(&r, &dev);
+
+        if ((frames + frames_per_tick) * 2 > cap * 2) {     /* grow buffer */
+            size_t ncap = cap * 2;
+            int16_t *np = realloc(pcm, ncap * 2 * sizeof(int16_t));
+            if (!np) break;
+            pcm = np; cap = ncap;
+        }
+        OPL3_GenerateStream(&chip, pcm + frames * 2, frames_per_tick);
+        frames += frames_per_tick;
+    }
+
+    printf("rendered %zu frames (%.2f s), finished=%d\n",
+           frames, (double)frames / WAV_RATE, r.finished);
+
+    int rc = write_wav(wavpath, pcm, frames, WAV_RATE);
+    if (rc == 0) printf("wrote %s\n", wavpath);
+    else fprintf(stderr, "failed to write %s\n", wavpath);
+
+    free(pcm);
+    osl1_free(&song);
+    return rc == 0 ? 0 : 1;
+}
 
 /* Render `frames` stereo frames and queue them on the audio device. */
 static int render_queue(SDL_AudioDeviceID dev, opl3_chip *chip, int frames)
@@ -37,6 +136,10 @@ static int render_queue(SDL_AudioDeviceID dev, opl3_chip *chip, int frames)
 
 int main(int argc, char **argv)
 {
+    /* Offline render mode: medplay --wav <out.wav> <songfile> */
+    if (argc >= 4 && strcmp(argv[1], "--wav") == 0)
+        return render_wav(argv[2], argv[3]);
+
     /* Optionally load a real ADL instrument from disk. */
     if (argc > 1) {
         FILE *f = fopen(argv[1], "rb");
