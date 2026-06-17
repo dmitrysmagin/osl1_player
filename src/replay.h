@@ -48,6 +48,13 @@ typedef struct {
     uint16_t flags;         /* 0x15C0 position header flags                */
     uint16_t row_limit;     /* 0x15C2 rows in this position (hdr & 0x0FFF) */
 
+    /* Effect engine state (Phase 5). The DOS engine carries tempo on the PIT
+     * (set_tempo @0x49D) and speed in the channel block (+0x02). */
+    uint16_t tempo;         /* timer Hz; effect 0x0F. Default 50.           */
+    uint8_t  jump_pending;  /* effect 0x0B (position jump) requested        */
+    uint8_t  jump_order;    /* target order index for the pending jump      */
+    uint8_t  break_pending; /* effect 0x0E (pattern break) requested        */
+
     int      orders_played; /* incremented each time the order index wraps */
     int      finished;      /* set after the song loops back to the start  */
 

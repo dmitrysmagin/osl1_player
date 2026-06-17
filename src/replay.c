@@ -32,6 +32,7 @@ void replay_init(Replay *r, const Song *song, int speed)
     r->pos         = 0;
     r->cursor      = 0;
     r->row_limit   = song->blk.row_count ? song->blk.row_count : 1;
+    r->tempo       = 50;          /* PIT default (init_timer @0xEE: tempo=0x32) */
 
     /* Mark every voice's "last note" as none so the first note keys on. */
     for (int v = 0; v < REPLAY_MAX_VOICES; v++)
@@ -153,7 +154,65 @@ static void decode_row(Replay *r)
     r->cursor = (uint16_t)(s - (base + 4));
 }
 
-/* trigger_note @0x1013: key notes / apply volume for the freshly decoded row. */
+/* Push a voice's engine volume (0..0x7F) to the device as OPL attenuation. */
+static void send_volume(Replay *r, opl_dev *dev, int v)
+{
+    if (dev) opl_dev_set_volume(dev, v, (r->voice[v].b[12] * 63) / 127);
+}
+
+/* Row-side effect dispatch (jump table @0x115A). Runs once when the row is
+ * decoded, for every voice cell that carries a command. Only the effects that
+ * are tractable in this clean-room model are implemented; pitch/period effects
+ * (0x01/0x02/0x03) need a period->fnum path the OPL backend does not yet expose
+ * and are left as no-ops, matching the plan's "unknown -> no-op" rule. */
+static void dispatch_row_effect(Replay *r, opl_dev *dev, int v)
+{
+    RVoice  *vc  = &r->voice[v];
+    uint8_t  cmd = vc->b[6];
+    uint8_t  prm = vc->b[7];
+
+    switch (cmd) {
+    case 0x06:                                   /* @0x12CC: note off       */
+        vc->b[6] = 0;
+        vc->b[14] = 0xFF;
+        if (dev) opl_dev_note_off(dev, v);
+        break;
+
+    case 0x09: {                                 /* @0x1361: set speed       */
+        uint8_t sp = prm & 0x1F;
+        if (sp) { r->speed = sp; r->tick = 0; }
+        break;
+    }
+
+    case 0x0B:                                   /* @0x133F: position jump   */
+        r->jump_pending = 1;
+        r->jump_order   = (uint8_t)(prm ? prm - 1 : 0);
+        break;
+
+    case 0x0C:                                   /* @0x1358: set volume      */
+        vc->b[12] = prm;
+        vc->b[6]  = 0;                            /* consumed (not per-tick)  */
+        vc->b[7]  = 0;
+        send_volume(r, dev, v);
+        break;
+
+    case 0x0E:                                   /* @0x1351: pattern break   */
+        r->break_pending = 1;
+        vc->b[6] = 0;
+        break;
+
+    case 0x0F: {                                 /* @0x1376: set tempo       */
+        uint16_t t = prm;
+        if (t) { if (t < 19) t = 19; r->tempo = t; } /* clamp @0x4B3: min 0x13 */
+        break;
+    }
+
+    default:                                     /* @0x119A stub: no-op      */
+        break;
+    }
+}
+
+/* trigger_note @0x1013: key notes, set initial volume, then run row effects. */
 static void trigger_row(Replay *r, opl_dev *dev)
 {
     for (int v = 0; v < r->voice_count; v++) {
@@ -167,16 +226,71 @@ static void trigger_row(Replay *r, opl_dev *dev)
                 vc->b[14] = n;
                 if (dev) opl_dev_note_on(dev, v, n);
             }
-            uint8_t vol = 0x7F;
-            if (vc->b[6] == 0x0C) {                  /* effect 0x0C = volume */
-                vol = vc->b[7];
-                vc->b[6] = 0;
-                vc->b[7] = 0;
-            }
-            vc->b[12] = vol;
-            /* scale the 0..0x7F engine volume to OPL's 0..63 attenuation. */
-            if (dev) opl_dev_set_volume(dev, v, (vol * 63) / 127);
+            /* A fresh note defaults to full volume unless a 0x0C rides with
+             * it; dispatch_row_effect applies the explicit level below. */
+            if (vc->b[6] != 0x0C)
+                vc->b[12] = 0x7F;
+            send_volume(r, dev, v);
         }
+
+        dispatch_row_effect(r, dev, v);
+    }
+}
+
+/* tick_effects @0x10E3: per-tick processing on the non-row ticks (jump table
+ * @0x1103). Volume slide (0x10) is implemented; portamento (0x01/0x02/0x03) and
+ * note-delay (0x1E) operate on period/timing state not modelled here. */
+static void tick_effects(Replay *r, opl_dev *dev)
+{
+    for (int v = 0; v < r->voice_count; v++) {
+        RVoice *vc = &r->voice[v];
+        if (vc->b[6] == 0 && vc->b[7] == 0) continue;   /* @0x10E6: cmd|prm   */
+
+        if (vc->b[6] == 0x10) {                  /* @0x1201: volume slide    */
+            uint8_t prm = vc->b[7];
+            int vol = vc->b[12];
+            uint8_t up = (uint8_t)(prm >> 4);
+            if (up) {
+                vol += up * 2;                   /* shl al,1 -> *2           */
+                if (vol > 0x7F) vol = 0x7F;
+            } else {
+                vol -= (prm & 0x0F) * 2;
+                if (vol < 0) vol = 0;
+            }
+            vc->b[12] = (uint8_t)vol;
+            send_volume(r, dev, v);
+        }
+        /* other per-tick effects: no-op (see note above) */
+    }
+}
+
+/* Advance the song position (0xFCB) honouring effect-driven jump/break. */
+static void advance_position(Replay *r)
+{
+    int loop_event = 0;                          /* a wrap or backward jump  */
+
+    if (r->jump_pending) {                       /* effect 0x0B (@0x133F)    */
+        r->jump_pending = 0;
+        uint8_t target = r->jump_order;
+        if (target <= r->order_idx) loop_event = 1;  /* jump back == loop    */
+        r->order_idx = target;
+        r->pos = 0; r->cursor = 0;
+        if (r->order_idx >= r->order_len) {
+            r->order_idx = r->restart_idx;
+            loop_event = 1;
+        }
+    } else if (r->break_pending || r->pos >= r->row_limit) {
+        r->break_pending = 0;                    /* effect 0x0E ends the pos  */
+        r->pos = 0; r->cursor = 0;
+        if (++r->order_idx >= r->order_len) {
+            r->order_idx = r->restart_idx;
+            loop_event = 1;
+        }
+    }
+
+    if (loop_event) {
+        r->orders_played++;
+        if (r->orders_played >= 1) r->finished = 1;  /* one pass for --wav   */
     }
 }
 
@@ -184,21 +298,13 @@ void replay_tick(Replay *r, opl_dev *dev)
 {
     if (r->finished) return;
 
-    if (++r->tick < r->speed)
-        return;                                  /* same row: per-tick fx   */
+    if (++r->tick < r->speed) {
+        tick_effects(r, dev);                    /* non-row tick: run effects */
+        return;
+    }
     r->tick = 0;
 
     decode_row(r);
     trigger_row(r, dev);
-
-    /* end-of-position / loop handling (0xFCB). */
-    if (r->pos >= r->row_limit) {
-        r->pos    = 0;
-        r->cursor = 0;
-        if (++r->order_idx >= r->order_len) {
-            r->order_idx   = r->restart_idx;
-            r->orders_played++;
-            if (r->orders_played >= 1) r->finished = 1; /* one pass for --wav */
-        }
-    }
+    advance_position(r);
 }

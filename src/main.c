@@ -123,7 +123,8 @@ static int render_wav(const char *wavpath, const char *songpath)
     while (!r.finished && frames < max_frames) {
         replay_tick(&r, &dev);
 
-        accum += SAMPLES_PER_TICK;
+        /* Tempo (effect 0x0F) sets the tick rate; recompute per tick. */
+        accum += (double)WAV_RATE / (r.tempo ? r.tempo : TICK_HZ);
         uint32_t n = (uint32_t)accum;       /* whole frames to emit this tick */
         accum -= n;
 
@@ -230,7 +231,7 @@ static int play_live(const char *songpath, int speed)
 
         replay_tick(&r, &dev);
 
-        accum += SAMPLES_PER_TICK;
+        accum += (double)have.freq / (r.tempo ? r.tempo : TICK_HZ);
         uint32_t n = (uint32_t)accum;
         accum -= n;
 
