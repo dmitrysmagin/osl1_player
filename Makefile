@@ -24,8 +24,12 @@ WARN     = -Wall -Wextra
 OPT      = -O2
 
 # Prefer sdl2-config, fall back to pkg-config.
-SDL_CFLAGS := $(shell sdl2-config --cflags 2>/dev/null || pkg-config --cflags sdl2)
-SDL_LIBS   := $(shell sdl2-config --libs   2>/dev/null || pkg-config --libs   sdl2)
+#
+# We provide our own main() (SDL_MAIN_HANDLED) and want a console subsystem app
+# so SIGINT (Ctrl-C) reaches the process and stdout works. So strip SDL's
+# -Dmain=SDL_main, drop -lSDL2main, and replace -mwindows with -mconsole.
+SDL_CFLAGS := $(shell (sdl2-config --cflags 2>/dev/null || pkg-config --cflags sdl2) | sed 's/-Dmain=SDL_main//')
+SDL_LIBS   := $(shell (sdl2-config --libs   2>/dev/null || pkg-config --libs   sdl2) | sed 's/-mwindows/-mconsole/g; s/-lSDL2main//g')
 
 CFLAGS  = $(OPT) $(CSTD) $(WARN) $(SDL_CFLAGS)
 LDLIBS  = $(SDL_LIBS)

@@ -13,13 +13,20 @@
 #include <stdlib.h>
 #include <string.h>
 #include <stdint.h>
+#include <signal.h>
 #include <dirent.h>
 #include <sys/stat.h>
+#define SDL_MAIN_HANDLED            /* we supply main(); console subsystem */
 #include <SDL.h>
 #include "opl3.h"
 #include "opl_dev.h"
 #include "osl1.h"
 #include "replay.h"
+
+/* Set by the SIGINT (Ctrl-C) handler; polled by the playback/render loops so
+ * the audio device is torn down cleanly instead of the process being killed. */
+static volatile sig_atomic_t g_stop = 0;
+static void on_sigint(int sig) { (void)sig; g_stop = 1; }
 
 /* Playback options parsed from the command line (Phase 6). */
 typedef struct {
@@ -144,7 +151,7 @@ static int render_wav(const char *songpath, const char *wavpath,
     size_t frames = 0;
     int last_order = -1;
 
-    while (!r.finished && frames < max_frames) {
+    while (!r.finished && frames < max_frames && !g_stop) {
         replay_tick(&r, &dev);
 
         if (opt->status && (int)r.order_idx != last_order) {
@@ -192,12 +199,55 @@ static int render_queue(SDL_AudioDeviceID dev, opl3_chip *chip, int frames)
     return rc;
 }
 
-/* Live playback: drive the replay engine in real time and stream to SDL.
- *
- * Queue mode (no audio callback / no threads): each loop iteration runs as many
- * replay ticks as are needed to keep ~LIVE_AHEAD_S of audio queued, rendering
- * the fractional samples-per-tick for each. SDL paces us via the queue size, so
- * the wall-clock playback rate matches the 50 Hz tick exactly. */
+/* Shared state between the main thread and the SDL audio callback. The replay
+ * engine, OPL backend and chip are all driven exclusively from the callback
+ * (audio thread), so there are no data races on them; the main thread only
+ * reads `ended` and, while holding the device lock, the replay counters for the
+ * status line. */
+typedef struct {
+    opl3_chip chip;
+    opl_dev   dev;
+    Replay    r;
+    double    tick_accum;   /* whole+fractional frames owed before next tick   */
+    int       rate;         /* device sample rate                              */
+    volatile int ended;     /* set by the callback when the song finishes      */
+} LiveState;
+
+/* SDL audio callback: the audio device is the master clock. For each frame we
+ * owe, advance one replay tick whenever the accumulator runs dry (samples per
+ * tick = rate / tempo, fractional so it never drifts), then render OPL frames
+ * in chunks up to the next tick boundary. Modelled on musicv/wm-player's
+ * sdl_audio.c, adapted to chunked OPL3_GenerateStream + tempo-aware pacing. */
+static void audio_cb(void *userdata, Uint8 *stream, int len)
+{
+    LiveState *ls = (LiveState *)userdata;
+    int16_t  *out = (int16_t *)stream;
+    uint32_t frames = (uint32_t)len / 4;        /* 2 ch * int16 = 4 bytes/frame */
+    uint32_t i = 0;
+
+    while (i < frames) {
+        if (ls->tick_accum < 1.0) {
+            if (!ls->r.finished)
+                replay_tick(&ls->r, &ls->dev);
+            else
+                ls->ended = 1;                  /* keep ringing the chip out    */
+            ls->tick_accum += (double)ls->rate / (ls->r.tempo ? ls->r.tempo : TICK_HZ);
+        }
+
+        uint32_t avail = (uint32_t)ls->tick_accum;
+        uint32_t chunk = frames - i;
+        if (chunk > avail) chunk = avail;
+        if (chunk == 0) { ls->tick_accum += 1.0; continue; }  /* paranoia       */
+
+        OPL3_GenerateStream(&ls->chip, out + i * 2, chunk);
+        i += chunk;
+        ls->tick_accum -= chunk;
+    }
+}
+
+/* Live playback: the SDL audio callback (audio_cb) drives the replay engine.
+ * The main thread just installs a Ctrl-C handler and idles until the song ends
+ * or the user interrupts, then tears the device down cleanly. */
 static int play_live(const char *songpath, const Options *opt)
 {
     Song song;
@@ -217,90 +267,76 @@ static int play_live(const char *songpath, const Options *opt)
         return 1;
     }
 
-    SDL_AudioSpec want, have;
+    LiveState *ls = calloc(1, sizeof(*ls));      /* large; keep off the stack    */
+    if (!ls) { SDL_Quit(); osl1_free(&song); return 1; }
+    ls->ended = 0;
+    ls->tick_accum = 0.0;
+
+    SDL_AudioSpec want;
     SDL_zero(want);
     want.freq     = opt->rate;
     want.format   = AUDIO_S16SYS;
     want.channels = 2;
     want.samples  = 1024;
-    want.callback = NULL;                /* queue mode */
+    want.callback = audio_cb;            /* callback mode (audio is the clock)   */
+    want.userdata = ls;
 
+    /* Pass NULL for the obtained spec (and no ALLOW_* flags) so SDL delivers the
+     * exact format we asked for, converting internally if the hardware differs.
+     * Opens paused, so it is safe to finish initialising `ls` before unpausing. */
     SDL_AudioDeviceID adev =
-        SDL_OpenAudioDevice(NULL, 0, &want, &have, 0);
+        SDL_OpenAudioDevice(NULL, 0, &want, NULL, 0);
     if (!adev) {
         fprintf(stderr, "SDL_OpenAudioDevice: %s\n", SDL_GetError());
-        SDL_Quit();
-        osl1_free(&song);
+        free(ls); SDL_Quit(); osl1_free(&song);
         return 1;
     }
     printf("audio: %d Hz, %d ch (OPL%d, %u voices)\n",
-           have.freq, have.channels, use_opl3 ? 3 : 2,
+           want.freq, want.channels, use_opl3 ? 3 : 2,
            song.blk.track_count);
 
-    opl3_chip chip;
-    OPL3_Reset(&chip, (uint32_t)have.freq);
-
-    opl_dev dev;
-    opl_dev_init(&dev, &chip, use_opl3);
+    ls->rate = want.freq;
+    OPL3_Reset(&ls->chip, (uint32_t)want.freq);
+    opl_dev_init(&ls->dev, &ls->chip, use_opl3);
 
     FILE *tracef = NULL;
     if (opt->trace) {
         tracef = fopen(opt->trace, "w");
         if (!tracef) fprintf(stderr, "warning: cannot open trace %s\n", opt->trace);
-        else opl_dev_set_trace(&dev, tracef);
+        else opl_dev_set_trace(&ls->dev, tracef);
     }
 
-    Replay r;
-    replay_init(&r, &song, opt->speed);
-    program_voices(&dev, &r);
+    replay_init(&ls->r, &song, opt->speed);
+    program_voices(&ls->dev, &ls->r);
 
-    /* Keep this many seconds of audio buffered ahead of the play cursor. */
-    const Uint32 ahead_bytes =
-        (Uint32)(0.20 * have.freq) * 2u * (Uint32)sizeof(int16_t);
+    printf("playing... press Ctrl-C to stop\n");
 
-    double accum = 0.0;
+    SDL_PauseAudioDevice(adev, 0);       /* start the callback                   */
+
     Uint32 next_status = 0;
-    SDL_PauseAudioDevice(adev, 0);
-
-    while (!r.finished) {
-        if (SDL_GetQueuedAudioSize(adev) >= ahead_bytes) {
-            if (opt->status && SDL_GetTicks() >= next_status) {
-                next_status = SDL_GetTicks() + 200;
-                printf("\r  order %2u/%-2u  row %3u/%-3u  speed %u  tempo %u   ",
-                       r.order_idx, r.order_len, r.pos, r.row_limit,
-                       r.speed, r.tempo);
-                fflush(stdout);
-            }
-            SDL_Delay(5);                /* queue full enough: let it drain */
-            continue;
+    while (!g_stop && !ls->ended) {
+        if (opt->status && SDL_GetTicks() >= next_status) {
+            next_status = SDL_GetTicks() + 200;
+            SDL_LockAudioDevice(adev);   /* consistent snapshot of the counters  */
+            unsigned oi = ls->r.order_idx, ol = ls->r.order_len;
+            unsigned pos = ls->r.pos, rl = ls->r.row_limit;
+            unsigned sp = ls->r.speed, tp = ls->r.tempo;
+            SDL_UnlockAudioDevice(adev);
+            printf("\r  order %2u/%-2u  row %3u/%-3u  speed %u  tempo %u   ",
+                   oi, ol, pos, rl, sp, tp);
+            fflush(stdout);
         }
-
-        replay_tick(&r, &dev);
-
-        accum += (double)have.freq / (r.tempo ? r.tempo : TICK_HZ);
-        uint32_t n = (uint32_t)accum;
-        accum -= n;
-
-        int16_t buf[1024 * 2];           /* one tick is ~994 frames < 1024  */
-        if (n > 1024) n = 1024;
-        OPL3_GenerateStream(&chip, buf, n);
-        if (SDL_QueueAudio(adev, buf, n * 2u * (Uint32)sizeof(int16_t)) != 0) {
-            fprintf(stderr, "queue: %s\n", SDL_GetError());
-            break;
-        }
+        SDL_Delay(50);
     }
-
-    /* Drain whatever is still queued. */
-    while (SDL_GetQueuedAudioSize(adev) > 0)
-        SDL_Delay(20);
-    SDL_Delay(100);
-
     if (opt->status) printf("\n");
+
+    SDL_PauseAudioDevice(adev, 1);       /* stop the callback before teardown    */
     SDL_CloseAudioDevice(adev);
     SDL_Quit();
     if (tracef) fclose(tracef);
     osl1_free(&song);
-    printf("done\n");
+    free(ls);
+    printf(g_stop ? "stopped\n" : "done\n");
     return 0;
 }
 
@@ -327,7 +363,7 @@ static int play_directory(const char *dir, const Options *opt)
 
     struct dirent *e;
     int count = 0, rc = 0;
-    while ((e = readdir(d)) != NULL) {
+    while ((e = readdir(d)) != NULL && !g_stop) {
         char path[1024];
         snprintf(path, sizeof path, "%s/%s", dir, e->d_name);
 
@@ -373,6 +409,10 @@ static void usage(void)
 
 int main(int argc, char **argv)
 {
+    SDL_SetMainReady();                 /* we handle main(); see SDL_MAIN_HANDLED */
+    g_stop = 0;
+    signal(SIGINT, on_sigint);          /* Ctrl-C stops playback/render cleanly  */
+
     Options opt;
     opt.wav = NULL; opt.trace = NULL; opt.rate = WAV_RATE;
     opt.opl3 = -1;  opt.speed = 6;     opt.status = 0;
