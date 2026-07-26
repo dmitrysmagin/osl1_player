@@ -25,7 +25,12 @@ static uint16_t voice_bank(int voice) { return voice >= 9 ? 0x100 : 0x000; }
 static void wr(opl_dev *d, uint16_t reg, uint8_t val)
 {
     if (d->trace) fprintf(d->trace, "%03X=%02X\n", reg, val);
-    OPL3_WriteReg(d->chip, reg, val);
+    /* Buffered write: Nuked queues the register change with a small sample
+     * delay and applies it inside OPL3_GenerateStream, so a burst of writes at
+     * a tick boundary (patch upload + key-off/on) is spread across samples the
+     * way a real OPL sees them over the ISA bus, instead of landing on one
+     * instant. Both the WAV render and the SDL callback pump GenerateStream. */
+    OPL3_WriteRegBuffered(d->chip, reg, val);
 }
 
 void opl_dev_set_trace(opl_dev *d, FILE *f)
@@ -95,7 +100,14 @@ void opl_dev_note_on(opl_dev *d, int voice, int note)
 
     d->shadow_a0[voice] = a0;
     d->shadow_b0[voice] = b0;
+
+    /* Retrigger so the OPL envelope restarts (a fresh attack) on every keyed
+     * note, exactly as MED.EXE does: write the new fnum low, then B0 with KEYON
+     * *clear*, then B0 with KEYON *set*. Without the intermediate key-off the
+     * amplitude envelope never re-attacks and successive notes on a voice slur
+     * together. Verified against a DOSBox OPL capture: A5=57 B5=11 B5=31. */
     wr(d, bank + 0xA0 + ch, a0);
+    wr(d, bank + 0xB0 + ch, (uint8_t)(b0 & ~0x20));
     wr(d, bank + 0xB0 + ch, b0);
 }
 

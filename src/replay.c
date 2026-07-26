@@ -217,15 +217,22 @@ static void trigger_row(Replay *r, opl_dev *dev)
 {
     for (int v = 0; v < r->voice_count; v++) {
         RVoice *vc = &r->voice[v];
-        uint8_t note = vc->b[5];
-        uint16_t period = (uint16_t)(ru16(&vc->b[1]) | ru16(&vc->b[3]));
+        /* The note is cell[0] (= b[1]); it holds the absolute Adlib note number
+         * (block*12 + semitone), keyed straight into the FNUM/block path with no
+         * decrement. Verified against a DOSBox OPL capture of MED.EXE playing
+         * TITLE.ADL: cell[0]=0x41 -> A0=CB/B0=35 (block 5), 0x35 -> B0=31
+         * (block 4), both exact. b[5] is NOT the note (it carries the 1-based
+         * instrument index). A rest decodes to an all-zero cell (note 0), and
+         * 0x7F is the explicit "no note" marker. */
+        uint8_t note = vc->b[1];
 
-        if (note != 0 && period != 0) {
-            uint8_t n = (uint8_t)(note - 1);         /* dec al              */
-            if (n != vc->b[14]) {
-                vc->b[14] = n;
-                if (dev) opl_dev_note_on(dev, v, n);
-            }
+        if (note != 0 && note != 0x7F) {
+            /* Every cell that carries a note keys on afresh — including a note
+             * identical to the previous one (MED.EXE has no "same note" guard;
+             * the DOSBox capture shows repeated notes retriggering row-for-row).
+             * opl_dev_note_on restarts the envelope, so this is a real attack. */
+            vc->b[14] = note;
+            if (dev) opl_dev_note_on(dev, v, note);
             /* A fresh note defaults to full volume unless a 0x0C rides with
              * it; dispatch_row_effect applies the explicit level below. */
             if (vc->b[6] != 0x0C)
