@@ -20,15 +20,17 @@
 #define RVOICE_SIZE       24   /* >= the fields the engine touches (vb+0..+19) */
 
 /* Per-voice runtime block. Field meaning by byte offset (matches the DOS
- * voice block; decode_cell writes the 8-byte cell starting at b[1]):
- *   b[0]      period/fine low byte (process_channel: bp = b[0]&0xFF - 1)
- *   b[1..4]   period words (rest test: word@b[1] | word@b[3])
- *   b[5]      note   (0 = rest; actual note = b[5]-1)
+ * voice block; decode_cell @0x1526 writes the 8-byte cell into b[0..7]):
+ *   b[0]      duration (rows the cell sustains)
+ *   b[1]      note   (0 = rest; this is the audible pitch fed to es:0x08 @0x0494)
+ *   b[2..3]   period word (chord/portamento pitch, es:0x0C extra voices)
+ *   b[4]      chord/extra-voice byte
+ *   b[5]      instrument selector (constant per track; file instr = b[5]-2,
+ *             drives the es:0x14 patch-upload path @0x06F1)
  *   b[6]      effect command
  *   b[7]      effect parameter
- *   b[8]      cell tail byte (effect param 2, when present)
  *   b[12]     current volume (0..0x7F)
- *   b[14]     last note played (note-on only fires when b[5]-1 changes)
+ *   b[14]     last note played
  */
 typedef struct { uint8_t b[RVOICE_SIZE]; } RVoice;
 

@@ -122,8 +122,13 @@ int osl1_load(const char *path, Song *song, char *errbuf, size_t errlen)
             ins->p1  = rd_u16(raw, (size_t)w1 + 4, sz);
             ins->p2  = rd_u16(raw, (size_t)w1 + 6, sz);
             rd_str(raw, (size_t)w1 + 0x0A, sz, ins->name, 20);
+            /* Adlib device patch lives at record +0x2E (16 bytes). Verified
+             * against ADLIB.DEV's operator programmer (0xD69) and the DRO
+             * capture: the 16 bytes are mod 0x20/40/60/80/E0 (b0-4), carrier
+             * 0x20/40/60/80/E0 (b5-9), 0xC0 (b10). The +0x1E block is a
+             * different (non-Adlib) device sub-record. */
             for (int b = 0; b < 16; b++) {
-                size_t db = (size_t)w1 + 0x1E + b;
+                size_t db = (size_t)w1 + 0x2E + b;
                 ins->adl[b] = (db < sz) ? raw[db] : 0;
             }
             last_valid_off = w1;

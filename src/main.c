@@ -38,13 +38,6 @@ typedef struct {
     int         status;  /* 1 = print a progress/status line                 */
 } Options;
 
-/* A real instrument: ADLIB/INST0000.ADL (RE-REPORT section 5.2). */
-static uint8_t g_patch[16] = {
-    0x64, 0x4f, 0xf2, 0x0b, 0x00, 0x71,
-    0x3f, 0x52, 0x0b, 0x00, 0x0e, 0x00,
-    0x00, 0x00, 0x00, 0x00
-};
-
 /* Native Nuked-OPL3 sample rate; the DOS engine ticks at 50 Hz. */
 #define WAV_RATE  49716u
 #define TICK_HZ   50u
@@ -59,14 +52,22 @@ static int opl3_needed(const Song *song)
     return song->blk.track_count > 9;
 }
 
-/* Program every replay voice. The embedded song instruments are higher-level
- * descriptors (GM-named for SCC, compact for ALB) that the DOS device drivers
- * expand via an internal bank; that expansion is not yet reverse-engineered, so
- * we fall back to a known-good standalone ADL patch for an audible timbre. */
+/* Seed every replay voice with a real song instrument so an OPL channel that
+ * is keyed before its first per-note program upload still has a valid timbre.
+ * The audible path is opl_dev_program driven per note by replay.c (instrument
+ * selected from the cell's b[5] byte, verified against ADLIB.DEV @0xD69 and the
+ * title.dro capture); this is only the power-on default. We use the first valid
+ * embedded instrument rather than a hardcoded patch. */
 static void program_voices(opl_dev *dev, const Replay *r)
 {
+    const Song *song = r->song;
+    const uint8_t *seed = NULL;
+    for (uint16_t i = 0; i < song->instr_total; i++) {
+        if (song->instr[i].valid) { seed = song->instr[i].adl; break; }
+    }
+    if (!seed) return;
     for (int v = 0; v < r->voice_count; v++)
-        opl_dev_program(dev, v, g_patch);
+        opl_dev_program(dev, v, seed);
 }
 
 /* Write a 16-bit stereo little-endian WAV. Returns 0 on success. */
@@ -455,6 +456,14 @@ int main(int argc, char **argv)
 
 static int play_scale_demo(const char *patch_path)
 {
+    /* Standalone demo patch (ADLIB/INST0000.ADL, RE-REPORT 5.2), overridable
+     * from disk. Local to the demo; the song player uses real song instruments. */
+    uint8_t g_patch[16] = {
+        0x64, 0x4f, 0xf2, 0x0b, 0x00, 0x71,
+        0x3f, 0x52, 0x0b, 0x00, 0x0e, 0x00,
+        0x00, 0x00, 0x00, 0x00
+    };
+
     /* Optionally load a real ADL instrument from disk. */
     if (patch_path) {
         FILE *f = fopen(patch_path, "rb");

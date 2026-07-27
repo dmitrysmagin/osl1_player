@@ -64,32 +64,40 @@ void opl_dev_program(opl_dev *d, int voice, const uint8_t *adl)
     uint8_t  mod  = OP_OFF[ch];           /* modulator slot (op0)          */
     uint8_t  car  = (uint8_t)(mod + 3);   /* carrier slot (op1, audible)   */
 
-    /* ADL byte order: bytes 0..5 = CARRIER, bytes 6..11 = MODULATOR.
-     * (RE-REPORT 5.1's labels are reversed vs the OPL operator roles;
-     * verified empirically — the original order silences real patches —
-     * and corroborated by Appendix B.5, whose volume reg KSL comes from
-     * adl[1], i.e. the carrier's 0x40 byte.) */
-    wr(d, bank + 0x20 + car, adl[0]);
-    wr(d, bank + 0x40 + car, adl[1]);
-    wr(d, bank + 0x60 + car, adl[2]);
-    wr(d, bank + 0x80 + car, adl[3]);
-    wr(d, bank + 0xE0 + car, adl[4]);
-    wr(d, bank + 0x20 + mod, adl[6]);
-    wr(d, bank + 0x40 + mod, adl[7]);
-    wr(d, bank + 0x60 + mod, adl[8]);
-    wr(d, bank + 0x80 + mod, adl[9]);
-    wr(d, bank + 0xE0 + mod, adl[10]);
+    /* 16-byte ADL patch layout, from ADLIB.DEV's operator programmer @0xD69
+     * (verified byte-for-byte against the title.dro capture):
+     *   b0..b4  = MODULATOR 0x20,0x40,0x60,0x80,0xE0
+     *   b5..b9  = CARRIER   0x20,0x40,0x60,0x80,0xE0
+     *   b10     = 0xC0 feedback/connection
+     * The carrier 0x40 (b6) contributes only its KSL bits; the TL (loudness)
+     * is driven from the volume path, so it is uploaded silent (|0x3F) here
+     * exactly as the driver does, then opl_dev_set_volume writes the real TL. */
+    wr(d, bank + 0x20 + mod, adl[0]);
+    wr(d, bank + 0x40 + mod, adl[1]);
+    wr(d, bank + 0x60 + mod, adl[2]);
+    wr(d, bank + 0x80 + mod, adl[3]);
+    wr(d, bank + 0xE0 + mod, adl[4]);
+    wr(d, bank + 0x20 + car, adl[5]);
+    wr(d, bank + 0x40 + car, (uint8_t)((adl[6] & 0xC0) | 0x3F));
+    wr(d, bank + 0x60 + car, adl[7]);
+    wr(d, bank + 0x80 + car, adl[8]);
+    wr(d, bank + 0xE0 + car, adl[9]);
     /* feedback/algorithm + force L/R enable (0x30) so OPL3 output is audible */
-    wr(d, bank + 0xC0 + ch, (uint8_t)(adl[12] | 0x30));
+    wr(d, bank + 0xC0 + ch, (uint8_t)(adl[10] | 0x30));
 }
 
 void opl_dev_note_on(opl_dev *d, int voice, int note)
 {
     if (voice < 0 || voice >= d->voice_count) return;
-    if (note < 0) note = 0;
 
-    uint16_t fnum  = FNUM[note % 12];
-    uint8_t  block = (uint8_t)(note / 12);
+    /* ADLIB.DEV's pitch table (@0x3B5) is indexed by (note-12): the lowest
+     * playable note is 12, and block = (note-12)/12, semitone = (note-12)%12.
+     * Verified against title.dro (e.g. note 65 -> fnum 0x1CB, block 4). */
+    int n = note - 12;
+    if (n < 0) n = 0;
+
+    uint16_t fnum  = FNUM[n % 12];
+    uint8_t  block = (uint8_t)(n / 12);
     if (block > 7) block = 7;
 
     int      ch   = voice % 9;
@@ -135,8 +143,8 @@ void opl_dev_set_volume(opl_dev *d, int voice, int vol)
     uint8_t  car  = (uint8_t)(OP_OFF[ch] + 3);   /* carrier carries loudness */
 
     /* TL is attenuation: 0 = loudest. Keep the patch carrier's KSL bits,
-     * which live in adl[1] (the carrier 0x40 byte) per Appendix B.5. */
-    uint8_t ksl = d->patch[voice][1] & 0xC0;
+     * which live in adl[6] (the carrier 0x40 byte) per ADLIB.DEV @0xD69. */
+    uint8_t ksl = d->patch[voice][6] & 0xC0;
     uint8_t tl  = (uint8_t)((0x3F - vol) & 0x3F);
     wr(d, bank + 0x40 + car, (uint8_t)(ksl | tl));
 }

@@ -217,20 +217,29 @@ static void trigger_row(Replay *r, opl_dev *dev)
 {
     for (int v = 0; v < r->voice_count; v++) {
         RVoice *vc = &r->voice[v];
-        /* The note is cell[0] (= b[1]); it holds the absolute Adlib note number
-         * (block*12 + semitone), keyed straight into the FNUM/block path with no
-         * decrement. Verified against a DOSBox OPL capture of MED.EXE playing
-         * TITLE.ADL: cell[0]=0x41 -> A0=CB/B0=35 (block 5), 0x35 -> B0=31
-         * (block 4), both exact. b[5] is NOT the note (it carries the 1-based
-         * instrument index). A rest decodes to an all-zero cell (note 0), and
-         * 0x7F is the explicit "no note" marker. */
+        /* The audible note is b[1]. In TRACKER.DRV the row key-on runs through
+         * trigger_note @0x1013: the pitched voice is keyed by the es:0x08 path
+         * (@0x1077) with bh=[di+1] (=b[1]); b[2]..b[4] are additional chord
+         * voices via es:0x0C, which this monophonic model does not reproduce.
+         * ADLIB.DEV maps the note through its pitch table indexed by (note-12),
+         * so opl_dev_note_on does that octave offset. Verified against
+         * title.dro: b[1]=0x24 -> fnum 0x157 block 2, 0x41 -> 0x1CB block 4. */
         uint8_t note = vc->b[1];
 
-        if (note != 0 && note != 0x7F) {
-            /* Every cell that carries a note keys on afresh — including a note
-             * identical to the previous one (MED.EXE has no "same note" guard;
-             * the DOSBox capture shows repeated notes retriggering row-for-row).
-             * opl_dev_note_on restarts the envelope, so this is a real attack. */
+        if (note != 0) {
+            /* b[5] selects the voice's instrument. Empirically (title.dro,
+             * cross-checked against ADLIB.DEV) the file instrument index is
+             * b[5]-2: selectors 3,5,6,9,10 map to instruments 1,3,4,7,8. The
+             * driver reprograms the OPL operators on every key-on (ADLIB.DEV
+             * @0xD69), so we upload the patch here before the note-on. */
+            if (dev && vc->b[5] >= 2) {
+                int idx = vc->b[5] - 2;
+                if (idx >= 0 && idx < r->song->instr_total &&
+                    r->song->instr[idx].valid)
+                    opl_dev_program(dev, v, r->song->instr[idx].adl);
+            }
+            /* Each row with a note re-attacks (the driver allocates a fresh OPL
+             * voice per note; here we retrigger the voice's envelope). */
             vc->b[14] = note;
             if (dev) opl_dev_note_on(dev, v, note);
             /* A fresh note defaults to full volume unless a 0x0C rides with
