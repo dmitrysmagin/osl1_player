@@ -47,12 +47,13 @@ static void dump(const char *path)
     printf("    subtitle      \"%s\"\n", b->subtitle);
     printf("    tracks        %u\n", b->track_count);
     printf("    rows          %u\n", b->row_count);
+    printf("    restart_idx   %u\n", b->restart_idx);
     printf("    defaults      ");
     for (int i = 0; i < 8; i++) printf("0x%04X%s", b->defaults[i], i < 7 ? " " : "\n");
     printf("    checksum      0x%04X\n", b->checksum);
     printf("    ver_c         0x%04X\n", b->ver_c);
-    printf("    format_id     0x%04X\n", b->format_id);
-    printf("    track_rel     0x%04X\n", b->track_rel);
+    printf("    tempo         %u\n", b->tempo);
+    printf("    speed         %u\n", b->speed);
     printf("    order_count   %u\n", b->order_count);
 
     printf("    order        ");

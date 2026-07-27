@@ -30,7 +30,11 @@ void replay_init(Replay *r, const Song *song, int speed)
      * otherwise use the file's value, falling back to 6 if the field is 0. */
     r->speed       = (uint8_t)(speed > 0 ? speed
                              : song->blk.speed ? song->blk.speed : 6);
-    r->tick        = 0;
+    /* Tick counter starts at speed-1 (@0x439), so the very first 50 Hz tick
+     * rolls over and decodes/triggers row 0 immediately, exactly like the
+     * driver's tick engine @0xF54 (inc [si+5]; cmp [si+2]). Starting at 0
+     * would delay the first row by `speed` ticks (~120 ms at speed 6). */
+    r->tick        = (uint8_t)(r->speed > 0 ? r->speed - 1 : 0);
     r->order_idx   = 0;
     r->restart_idx = song->blk.restart_idx;
     r->order_len   = song->blk.order_count;
