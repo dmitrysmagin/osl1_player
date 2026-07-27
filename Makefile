@@ -38,6 +38,12 @@ BIN  = medplay.exe
 SRC  = src/main.c src/opl3.c src/opl_dev.c src/osl1.c src/replay.c
 OBJ  = $(SRC:.c=.o)
 
+# All project headers. Every object depends on all of them: a coarse but safe
+# rule so a struct-layout change (e.g. adding a field to opl_dev) forces every
+# translation unit to recompile. Without this a stale object built against the
+# old layout links against the new one and corrupts memory at run time.
+HDR  = src/opl3.h src/opl_dev.h src/osl1.h src/replay.h
+
 # Parser parity tool (no SDL needed): tools/osl1_dump.c + src/osl1.c
 DUMP_BIN = osl1_dump.exe
 DUMP_SRC = tools/osl1_dump.c src/osl1.c
@@ -47,7 +53,7 @@ all: $(BIN)
 $(BIN): $(OBJ)
 	$(CC) $(CFLAGS) $^ -o $@ $(LDLIBS)
 
-src/%.o: src/%.c
+src/%.o: src/%.c $(HDR)
 	$(CC) $(CFLAGS) -c $< -o $@
 
 # osl1_dump links only the parser; SDL flags are harmless but unused.

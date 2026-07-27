@@ -22,9 +22,10 @@
 /* Per-voice runtime block. Field meaning by byte offset (matches the DOS
  * voice block; decode_cell @0x1526 writes the 8-byte cell into b[0..7]):
  *   b[0]      duration (rows the cell sustains)
- *   b[1]      note   (0 = rest; this is the audible pitch fed to es:0x08 @0x0494)
- *   b[2..3]   period word (chord/portamento pitch, es:0x0C extra voices)
- *   b[4]      chord/extra-voice byte
+ *   b[1]      primary note (0 = rest; keyed via es:0x08 @0x0475, bh=[di+1])
+ *   b[2..4]   up to three chord notes (keyed via es:0x0C @0x0494, [di+2..4]);
+ *             all four voices share the channel's logical id per trigger_note
+ *             @0xE30, so the dynamic allocator tags them the same owner
  *   b[5]      instrument selector (constant per track; file instr = b[5]-2,
  *             drives the es:0x14 patch-upload path @0x06F1)
  *   b[6]      effect command

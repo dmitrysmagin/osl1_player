@@ -154,10 +154,12 @@ static void decode_row(Replay *r)
     r->cursor = (uint16_t)(s - (base + 4));
 }
 
-/* Push a voice's engine volume (0..0x7F) to the device as OPL attenuation. */
+/* Push a voice's engine volume (0..0x7F) to the device as OPL attenuation.
+ * Routed through opl_dev_chanvol so every physical voice the logical channel
+ * owns (primary + chord voices) tracks the same level, as ADLIB.DEV does. */
 static void send_volume(Replay *r, opl_dev *dev, int v)
 {
-    if (dev) opl_dev_set_volume(dev, v, (r->voice[v].b[12] * 63) / 127);
+    if (dev) opl_dev_chanvol(dev, v, (r->voice[v].b[12] * 63) / 127);
 }
 
 /* Row-side effect dispatch (jump table @0x115A). Runs once when the row is
@@ -175,7 +177,7 @@ static void dispatch_row_effect(Replay *r, opl_dev *dev, int v)
     case 0x06:                                   /* @0x12CC: note off       */
         vc->b[6] = 0;
         vc->b[14] = 0xFF;
-        if (dev) opl_dev_note_off(dev, v);
+        if (dev) opl_dev_keyoff(dev, v);         /* free all voices of chan v */
         break;
 
     case 0x09: {                                 /* @0x1361: set speed       */
@@ -217,36 +219,50 @@ static void trigger_row(Replay *r, opl_dev *dev)
 {
     for (int v = 0; v < r->voice_count; v++) {
         RVoice *vc = &r->voice[v];
-        /* The audible note is b[1]. In TRACKER.DRV the row key-on runs through
-         * trigger_note @0x1013: the pitched voice is keyed by the es:0x08 path
-         * (@0x1077) with bh=[di+1] (=b[1]); b[2]..b[4] are additional chord
-         * voices via es:0x0C, which this monophonic model does not reproduce.
-         * ADLIB.DEV maps the note through its pitch table indexed by (note-12),
-         * so opl_dev_note_on does that octave offset. Verified against
-         * title.dro: b[1]=0x24 -> fnum 0x157 block 2, 0x41 -> 0x1CB block 4. */
+        /* The primary note is b[1]; b[2..4] are up to three chord notes. In
+         * TRACKER.DRV trigger_note @0xE30 the primary is keyed via es:0x08
+         * (@0x0475, bh=[di+1]) and each chord note via es:0x0C (@0x0494,
+         * [di+2..4]) — all four calls pass bx=bp, so the logical channel id
+         * (`bl`) is shared by every voice the channel owns. We use the track
+         * index `v` as that channel id. ADLIB.DEV maps each note through its
+         * pitch table indexed by (note-12); opl_dev_note_on does that offset. */
         uint8_t note = vc->b[1];
 
         if (note != 0) {
-            /* b[5] selects the voice's instrument. Empirically (title.dro,
-             * cross-checked against ADLIB.DEV) the file instrument index is
-             * b[5]-2: selectors 3,5,6,9,10 map to instruments 1,3,4,7,8. The
-             * driver reprograms the OPL operators on every key-on (ADLIB.DEV
-             * @0xD69), so we upload the patch here before the note-on. */
-            if (dev && vc->b[5] >= 2) {
+            /* b[5] selects the instrument (file index = b[5]-2). NULL keeps the
+             * voice's current patch, exactly as ADLIB.DEV does when no upload
+             * rides with the key-on. Verified against title.dro: selectors
+             * 3,5,6,9,10 map to instruments 1,3,4,7,8. */
+            const uint8_t *adl = NULL;
+            if (vc->b[5] >= 2) {
                 int idx = vc->b[5] - 2;
                 if (idx >= 0 && idx < r->song->instr_total &&
                     r->song->instr[idx].valid)
-                    opl_dev_program(dev, v, r->song->instr[idx].adl);
+                    adl = r->song->instr[idx].adl;
             }
-            /* Each row with a note re-attacks (the driver allocates a fresh OPL
-             * voice per note; here we retrigger the voice's envelope). */
-            vc->b[14] = note;
-            if (dev) opl_dev_note_on(dev, v, note);
-            /* A fresh note defaults to full volume unless a 0x0C rides with
-             * it; dispatch_row_effect applies the explicit level below. */
+
+            /* A fresh note defaults to full volume unless a 0x0C rides with it;
+             * dispatch_row_effect applies the explicit level below. */
             if (vc->b[6] != 0x0C)
                 vc->b[12] = 0x7F;
-            send_volume(r, dev, v);
+            int vol = (vc->b[12] * 63) / 127;
+
+            vc->b[14] = note;
+
+            if (dev) {
+                /* Primary note (@0x0475): the driver self-frees the channel's
+                 * voices first, then allocates the first free physical voice and
+                 * keys on — so successive notes on a channel reuse the lowest
+                 * free voice, matching the DRO. Chord notes (@0x0494) allocate
+                 * extra voices under the same channel id with no preceding free. */
+                opl_dev_keyoff(dev, v);
+                opl_dev_keyon(dev, v, note, adl, vol);
+                for (int k = 2; k <= 4; k++) {
+                    uint8_t cn = vc->b[k];
+                    if (cn != 0)
+                        opl_dev_keyon(dev, v, cn, adl, vol);
+                }
+            }
         }
 
         dispatch_row_effect(r, dev, v);

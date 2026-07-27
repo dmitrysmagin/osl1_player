@@ -136,11 +136,15 @@ byte-for-byte against the DRO capture.
 
 ### `replay.c` — clean-room `TRACKER.DRV`
 - Per-voice runtime cell `RVoice.b[]` (written by `decode_cell` @0x1526):
-  `b[0]`=duration, **`b[1]`=note (audible pitch)**, `b[2..3]`=period word,
-  `b[4]`=chord/extra-voice byte, **`b[5]`=instrument selector**, `b[6]`=effect
-  command, `b[7]`=effect parameter, `b[12]`=current volume, `b[14]`=last note.
-- `trigger_row` keys the note from `b[1]` and uploads the instrument selected by
-  `b[5]` (**file instrument index = `b[5] − 2`**) before the key-on.
+  `b[0]`=duration, **`b[1]`=primary note**, **`b[2..4]`=up to three chord notes**,
+  **`b[5]`=instrument selector**, `b[6]`=effect command, `b[7]`=effect parameter,
+  `b[12]`=current volume, `b[14]`=last note. (`b[2..4]` were previously guessed to
+  be a period word; `trigger_note` @0xE30 keys them as three additional notes.)
+- `trigger_row` keys the primary note `b[1]` and each non-zero chord note
+  `b[2..4]` through the dynamic voice allocator (below), sharing one logical
+  channel id (the track index) across all of a channel's physical voices, and
+  uploads the instrument selected by `b[5]` (**file instrument index = `b[5] − 2`**)
+  before the key-on.
 - `replay_tick()`: per active channel `tick++`; on `tick == speed` decode the
   next row and trigger; otherwise run per-tick effects.
 - Effect `0x0C` = set volume is confirmed; other effects are decoded
@@ -155,6 +159,20 @@ byte-for-byte against the DRO capture.
 - `note_off(voice)` — clear the KEYON bit in the `0xB0` shadow.
 - `set_volume(voice, vol)` — write carrier `0x40` TL from the volume, keeping
   the patch's carrier KSL bits.
+- **Dynamic voice allocator** (ADLIB.DEV slot table @0x53C, 9 slots × 8 B),
+  layered over the physical-voice calls above:
+  - `keyon(chan, note, adl, vol)` — linear **first-free** scan (@0x50C) for a
+    physical voice, tag it with the logical channel id `chan`, program `adl`
+    (or keep the current patch if `NULL`), key on. Returns −1 if every voice is
+    busy — the note is **dropped, no stealing**, exactly as the driver does.
+  - `keyoff(chan)` — free every physical voice tagged with `chan` and key it
+    off (@0x58F); a channel may own several voices (chords).
+  - `chanvol(chan, vol)` — set volume on every voice owned by `chan`.
+  - The primary note-on self-frees the channel first (`keyoff` then `keyon`,
+    matching @0x475), so successive notes on a channel reuse the lowest free
+    voice. Verified against `title.dro`: the per-channel key-on distribution
+    matches the DOSBox capture (channels 0–8 allocated in ascending order, then
+    reused), within ~1 % (occasional pool-full drops).
 
 ### `main.c` — CLI, SDL2 audio, offline render
 Argument parsing, the SDL2 device + fractional 50 Hz tick scheduler, the
@@ -232,9 +250,8 @@ medplay/
 ```
 
 ## 10. Known gaps & stretch goals
-- **Chord/extra voices** (`b[2]`,`b[3]`,`b[4]` via the `es:0x0C` path) — medplay
-  is currently monophonic per track.
-- **Global transpose** (`ds:[0x10E2]`) — assumed 0 (holds for `TITLE.ADL`).
+- **Global transpose** (`ds:[0x10E2]`) — assumed 0 (holds for `TITLE.ADL`); the
+  chord notes `b[2..4]` are keyed at face value, without the driver's transpose add.
 - **Pitch bends** (the fine-pitch interpolation path) — plain notes only so far.
 - **Effects** beyond `0x0C` are decoded incrementally; unknowns are no-ops.
 - **Stretch:** SDL2 status window (order/pattern/VU), OPL3 4-op patches +
@@ -294,11 +311,11 @@ Zero the 8-byte cell, then pull a 2-bit code from the top of `dx:bx`:
 Type `11` (note + effects), gated by header flag bits:
 ```
 b[0] = u8[si++]                          ; duration
-if (!(flags & 0x1000)) {                 ; bit12: include period
-    b[1]   = u8[si++];                   ; note (audible pitch)
-    b[2:3] = u16[si]; si += 2;           ; period word
+if (!(flags & 0x1000)) {                 ; bit12: include note slots
+    b[1]   = u8[si++];                   ; primary note
+    b[2:3] = u16[si]; si += 2;           ; two more note slots (b[2],b[3])
 }
-b[4:5] = u16[si]; si += 2;               ; b[5] = instrument selector
+b[4:5] = u16[si]; si += 2;               ; b[4] = third note slot, b[5] = instrument
 b[6]   = u8[si++];                       ; effect command
 if (!(flags & 0x2000))                   ; bit13: include effect param
     b[7] = u8[si++];
@@ -327,15 +344,20 @@ entries below are the ones exercised by playback and verified against the
 ### B.1 Vtable entries that matter for playback
 | es:[off] | routine | purpose |
 |----------|---------|---------|
-| 0x08 | 0x0494 | note-on: find free voice, pitch lookup, program operators, key-on |
-| 0x0C | 0x058A | extra/chord voice key-on |
-| 0x10 | 0x05EF | note off (clear KEYON) |
-| 0x14 | 0x06F1 | 16-byte patch upload to slot `0x729 + DX*16` |
-| 0x20 | 0x0692 | program change |
+| 0x08 | 0x0475 | primary note-on: **self-free** channel's voices (@0x58F), then find first free voice (@0x50C), pitch lookup, program operators, key-on |
+| 0x0C | 0x0494 | chord/additional note-on: find first free voice + key-on, same channel id, **no** preceding free |
+| 0x10 | 0x058A | note off: free every voice tagged with the channel id (clear KEYON) |
+| 0x18 | 0x06F1 | 16-byte patch upload to slot `0x729 + DX*16` |
+| 0x24 | 0x0692 | program change |
+
+The 9 physical voice slots live at `cs:0x53C` (stride 8 B); slot+0 is the
+free-marker (`0xFF` = free, else the owning channel id). Allocation (@0x50C) is
+a **linear first-free scan**; a full scan sets carry and the note is **dropped
+with no voice-stealing**.
 
 ### B.2 Note → OPL frequency (the pitch table)
-The audible key-on (`es:0x08` @0x0494) takes the note in `bh` and reads a
-precomputed `(block<<12)|fnum` from a table at `cs:0x3B5`, indexed by
+Both note-on paths (`es:0x08` @0x0475 and `es:0x0C` @0x0494) take the note in
+`bh` and read a precomputed `(block<<12)|fnum` from a table at `cs:0x3B5`, indexed by
 `(note − 12)`. The lowest playable note is 12. Equivalent to the standard
 12-semitone F-number table:
 ```c

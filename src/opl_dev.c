@@ -45,8 +45,11 @@ void opl_dev_init(opl_dev *d, opl3_chip *chip, int opl3_mode)
     d->opl3        = opl3_mode ? 1 : 0;
     d->voice_count = opl3_mode ? 18 : 9;
 
-    for (int v = 0; v < OPL_DEV_MAX_VOICES; v++)
-        d->vol[v] = 0x3F;                 /* full volume (0x682 init analogue) */
+    for (int v = 0; v < OPL_DEV_MAX_VOICES; v++) {
+        d->vol[v]   = 0x3F;               /* full volume (0x682 init analogue) */
+        d->used[v]  = 0;                  /* slot free (0xFF marker @0x53C)    */
+        d->owner[v] = -1;
+    }
 
     if (d->opl3)
         wr(d, 0x105, 0x01);               /* enable OPL3 (18 two-op voices)    */
@@ -147,4 +150,50 @@ void opl_dev_set_volume(opl_dev *d, int voice, int vol)
     uint8_t ksl = d->patch[voice][6] & 0xC0;
     uint8_t tl  = (uint8_t)((0x3F - vol) & 0x3F);
     wr(d, bank + 0x40 + car, (uint8_t)(ksl | tl));
+}
+
+/* ---- dynamic allocation layer (ADLIB.DEV slot table @0x53C) ------------- */
+
+/* Linear first-free scan of the physical voices (allocator @0x50C). Returns
+ * the voice index, or -1 if every voice is busy — ADLIB.DEV sets carry and the
+ * caller drops the note (no voice-stealing). */
+static int alloc_voice(opl_dev *d)
+{
+    for (int v = 0; v < d->voice_count; v++)
+        if (!d->used[v]) return v;
+    return -1;
+}
+
+void opl_dev_keyoff(opl_dev *d, int chan)
+{
+    /* Match `chan` against every slot marker and free all that belong to it
+     * (@0x58F: a logical channel may own several physical voices — chords). */
+    for (int v = 0; v < d->voice_count; v++) {
+        if (d->used[v] && d->owner[v] == chan) {
+            opl_dev_note_off(d, v);
+            d->used[v]  = 0;
+            d->owner[v] = -1;
+        }
+    }
+}
+
+int opl_dev_keyon(opl_dev *d, int chan, int note, const uint8_t *adl, int vol)
+{
+    int v = alloc_voice(d);
+    if (v < 0) return -1;                 /* all voices busy -> note dropped */
+
+    d->used[v]  = 1;
+    d->owner[v] = (int16_t)chan;          /* slot+0 = `bl` marker (key-on)   */
+
+    if (adl) opl_dev_program(d, v, adl);  /* NULL keeps the current patch    */
+    opl_dev_set_volume(d, v, vol);
+    opl_dev_note_on(d, v, note);
+    return v;
+}
+
+void opl_dev_chanvol(opl_dev *d, int chan, int vol)
+{
+    for (int v = 0; v < d->voice_count; v++)
+        if (d->used[v] && d->owner[v] == chan)
+            opl_dev_set_volume(d, v, vol);
 }
