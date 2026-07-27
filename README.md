@@ -146,9 +146,38 @@ byte-for-byte against the DRO capture.
   uploads the instrument selected by `b[5]` (**file instrument index = `b[5] − 2`**)
   before the key-on.
 - `replay_tick()`: per active channel `tick++`; on `tick == speed` decode the
-  next row and trigger; otherwise run per-tick effects.
-- Effect `0x0C` = set volume is confirmed; other effects are decoded
-  incrementally and unknown ones are no-ops (non-fatal).
+  next row and trigger (`trigger_note` @0x1013); otherwise run per-tick effects
+  (`tick_effects` @0x10E3).
+- **Effect engine.** Both 32-entry jump tables from `TRACKER.DRV` are ported
+  verbatim — the per-tick table @0x1103 (dispatcher @0x10E3) and the row-side
+  table @0x115A (dispatcher @0x1143). Index = `cmd & 0x1F`; a set bit 7 routes to
+  the `es:0x30` stub (no-op on Adlib). Every handler below was checked
+  byte-for-byte against the disassembly:
+
+  | Cmd  | Effect          | Ported from        | Notes |
+  |------|-----------------|--------------------|-------|
+  | 0x01 | Portamento up   | @0x129D            | `period += param×20`, re-emit pitch (`es:0x24`). The ×20 is the shift routine @0x12BD (`p×4 + p×16`). |
+  | 0x02 | Portamento down | @0x12B0            | `period −= param×20`. |
+  | 0x03 | Tone portamento | @0x13B5 / @0x1386  | Note row retargets only (no key-on); `target = 0x2000 + (note − base_note)×0x155` clamped to 0x3FFF; slide `speed×20` toward target, snap-and-clear on arrival. |
+  | 0x04 | Vibrato         | `es:0x1C` stub     | State-only no-op on Adlib. |
+  | 0x05 | Porta+vol slide | `es:0x28` stub     | State-only no-op. |
+  | 0x06 | Note off        | @0x12CC (row)      | Keys the channel off. |
+  | 0x07 | Tremolo         | `es:0x2C` stub     | State-only no-op. |
+  | 0x08 | (reserved)      | `es:0x30` stub     | State-only no-op. |
+  | 0x09 | Set speed       | @0x1361 (row)      | ticks/row = `param & 0x1F`. |
+  | 0x0A | Volume slide    | @0x1201            | hi-nibble≠0 → up `hi×2` (clamp 0x7F), else down `lo×2` (clamp 0). |
+  | 0x0B | Position jump   | @0x133F (row)      | order = `param − 1`. |
+  | 0x0C | Set volume      | @0x1358 (row)      | Also consumed in `trigger_note` when riding a note. |
+  | 0x0E | Pattern break   | @0x1351 (row)      | Ends the current position. |
+  | 0x0F | Set tempo       | @0x1376 (row)      | Timer Hz; clamped to a sane minimum. |
+  | 0x1E | Arpeggio/strum  | @0x11A0            | Cycles notes `b[1..4]`, re-keying each via `es:0x08`/`es:0x0C`. |
+  | 0x1F | Note retrigger  | @0x1611            | Row side @0x15E8 latches `retrig_note`/count; per-tick counts down and re-keys. |
+
+  Verification: forced-OPL2 `--trace` renders of `PLANET1.ADL`/`TITLE.ADL` hit
+  every chromatic base-note F-number the DOSBox `.dro` captures produce (exact
+  match on all 12, plus min/max), with a sub-cent median deviation on
+  portamento intermediates. Remaining differences are glide granularity and
+  dynamic-voice allocation, not effect logic.
 
 ### `opl_dev.c` — clean-room `ADLIB.DEV`
 - 9 melodic voices (OPL2) or 18 (OPL3).

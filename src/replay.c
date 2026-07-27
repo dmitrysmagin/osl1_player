@@ -34,9 +34,10 @@ void replay_init(Replay *r, const Song *song, int speed)
     r->row_limit   = song->blk.row_count ? song->blk.row_count : 1;
     r->tempo       = 50;          /* PIT default (init_timer @0xEE: tempo=0x32) */
 
-    /* Mark every voice's "last note" as none so the first note keys on. */
+    /* Every voice starts pitch-centred (period 0x2000). A note-on resets this,
+     * so it only matters if a portamento arrives before the first note. */
     for (int v = 0; v < REPLAY_MAX_VOICES; v++)
-        r->voice[v].b[14] = 0xFF;
+        r->voice[v].period = 0x2000;
 }
 
 /* decode_cell @0x1526: pull a 2-bit code from the top of `*window` and fill
@@ -162,21 +163,57 @@ static void send_volume(Replay *r, opl_dev *dev, int v)
     if (dev) opl_dev_chanvol(dev, v, (r->voice[v].b[12] * 63) / 127);
 }
 
-/* Row-side effect dispatch (jump table @0x115A). Runs once when the row is
- * decoded, for every voice cell that carries a command. Only the effects that
- * are tractable in this clean-room model are implemented; pitch/period effects
- * (0x01/0x02/0x03) need a period->fnum path the OPL backend does not yet expose
- * and are left as no-ops, matching the plan's "unknown -> no-op" rule. */
+/* Key one voice's primary note, resetting its portamento anchor. Mirrors the
+ * ADLIB.DEV primary note-on (es:0x08 @0x475): self-free the channel's voices,
+ * reset the period to centre (0x2000) and record the base note for tone porta,
+ * then alloc+program+key. */
+static void key_primary(Replay *r, opl_dev *dev, int v, uint8_t note,
+                        const uint8_t *adl, int vol)
+{
+    RVoice *vc = &r->voice[v];
+    vc->period    = 0x2000;
+    vc->base_note = note;
+    if (dev) {
+        opl_dev_keyoff(dev, v);
+        opl_dev_keyon(dev, v, note, adl, vol);
+    }
+}
+
+/* tone-porta note setup @0x1386: target = 0x2000 + (note - base_note)*0x155,
+ * masked to 14 bits; pick the slide direction, or clear the target when the
+ * note already matches the current period. */
+static void set_tone_porta_target(Replay *r, int v)
+{
+    RVoice *vc = &r->voice[v];
+    int off = (int8_t)(uint8_t)(vc->b[1] - vc->base_note);   /* cbw of (note-base) */
+    uint16_t target = (uint16_t)((0x2000 + off * 0x155) & 0x3fff);
+    vc->tp_target = target;
+    vc->tp_dir    = 0;                       /* default: slide period down    */
+    if (target == vc->period)      vc->tp_target = 0;        /* already there  */
+    else if (target > vc->period)  vc->tp_dir    = 1;        /* slide up       */
+}
+
+/* Row-side effect dispatch (jump table @0x115A). Runs once per voice when a row
+ * is decoded, BEFORE the notes are keyed (matching trigger_note @0x1074), so the
+ * retrigger setup (0x1F) can consume the primary note. Effects 0x01/0x02/0x03/
+ * 0x0A/0x1E have no row-side action (they run per-tick); 0x04/0x05/0x07/0x08 map
+ * to ADLIB.DEV vtable stubs (clc/retf) and so are faithfully state-only no-ops. */
 static void dispatch_row_effect(Replay *r, opl_dev *dev, int v)
 {
     RVoice  *vc  = &r->voice[v];
-    uint8_t  cmd = vc->b[6];
-    uint8_t  prm = vc->b[7];
+    uint8_t *b   = vc->b;
+    uint8_t  cmd = b[6];
+    uint8_t  prm = b[7];
 
     switch (cmd) {
-    case 0x06:                                   /* @0x12CC: note off       */
-        vc->b[6] = 0;
-        vc->b[14] = 0xFF;
+    case 0x04:                                   /* @0x1402: es:0x28 stub    */
+    case 0x05:                                   /* @0x130E: es:0x1C stub    */
+    case 0x07:                                   /* @0x12D8: es:0x2C stub    */
+    case 0x08:                                   /* @0x12E8: es:0x2C stub    */
+        break;                                   /* state-only on Adlib      */
+
+    case 0x06:                                   /* @0x12CC: note off        */
+        b[6] = 0;
         if (dev) opl_dev_keyoff(dev, v);         /* free all voices of chan v */
         break;
 
@@ -192,15 +229,15 @@ static void dispatch_row_effect(Replay *r, opl_dev *dev, int v)
         break;
 
     case 0x0C:                                   /* @0x1358: set volume      */
-        vc->b[12] = prm;
-        vc->b[6]  = 0;                            /* consumed (not per-tick)  */
-        vc->b[7]  = 0;
+        b[12] = prm;
+        b[6]  = 0;                               /* consumed (not per-tick)  */
+        b[7]  = 0;
         send_volume(r, dev, v);
         break;
 
     case 0x0E:                                   /* @0x1351: pattern break   */
         r->break_pending = 1;
-        vc->b[6] = 0;
+        b[6] = 0;
         break;
 
     case 0x0F: {                                 /* @0x1376: set tempo       */
@@ -209,90 +246,159 @@ static void dispatch_row_effect(Replay *r, opl_dev *dev, int v)
         break;
     }
 
+    case 0x1F:                                   /* @0x15E8: retrigger setup */
+        if (b[1]) {
+            vc->retrig_note = b[1];
+            /* [di+0xf] = param_hi (initial count) | param_lo<<4 (reload). */
+            vc->fx_count = (uint8_t)((prm >> 4) | ((prm & 0x0F) << 4));
+            b[1] = 0;                            /* keyed by per-tick 0x1F   */
+        }
+        break;
+
     default:                                     /* @0x119A stub: no-op      */
         break;
     }
 }
 
-/* trigger_note @0x1013: key notes, set initial volume, then run row effects. */
+/* trigger_note @0x1013: per voice, select the instrument and initial volume,
+ * then (for a note-bearing row) dispatch the row effect and key the notes —
+ * unless a tone portamento (0x03) rides with the note, in which case the note
+ * only retargets the porta and is not keyed. */
 static void trigger_row(Replay *r, opl_dev *dev)
 {
     for (int v = 0; v < r->voice_count; v++) {
-        RVoice *vc = &r->voice[v];
-        /* The primary note is b[1]; b[2..4] are up to three chord notes. In
-         * TRACKER.DRV trigger_note @0xE30 the primary is keyed via es:0x08
-         * (@0x0475, bh=[di+1]) and each chord note via es:0x0C (@0x0494,
-         * [di+2..4]) — all four calls pass bx=bp, so the logical channel id
-         * (`bl`) is shared by every voice the channel owns. We use the track
-         * index `v` as that channel id. ADLIB.DEV maps each note through its
-         * pitch table indexed by (note-12); opl_dev_note_on does that offset. */
-        uint8_t note = vc->b[1];
+        RVoice        *vc  = &r->voice[v];
+        uint8_t       *b   = vc->b;
+        uint8_t        cmd = b[6];
+        int            any_note = b[1] || b[2] || b[3] || b[4];
+        const uint8_t *adl = NULL;
 
-        if (note != 0) {
-            /* b[5] selects the instrument (file index = b[5]-2). NULL keeps the
-             * voice's current patch, exactly as ADLIB.DEV does when no upload
-             * rides with the key-on. Verified against title.dro: selectors
-             * 3,5,6,9,10 map to instruments 1,3,4,7,8. */
-            const uint8_t *adl = NULL;
-            if (vc->b[5] >= 2) {
-                int idx = vc->b[5] - 2;
+        /* Step 1 (@0x101a): instrument select + initial volume, only when a
+         * selector AND at least one note are present. b[5] selects the patch
+         * (file index = b[5]-2; verified against title.dro). A 0x0C riding with
+         * the note sets the level (else full), and is consumed here. */
+        if (b[5] != 0 && any_note) {
+            if (b[5] >= 2) {
+                int idx = b[5] - 2;
                 if (idx >= 0 && idx < r->song->instr_total &&
                     r->song->instr[idx].valid)
                     adl = r->song->instr[idx].adl;
             }
-
-            /* A fresh note defaults to full volume unless a 0x0C rides with it;
-             * dispatch_row_effect applies the explicit level below. */
-            if (vc->b[6] != 0x0C)
-                vc->b[12] = 0x7F;
-            int vol = (vc->b[12] * 63) / 127;
-
-            vc->b[14] = note;
-
-            if (dev) {
-                /* Primary note (@0x0475): the driver self-frees the channel's
-                 * voices first, then allocates the first free physical voice and
-                 * keys on — so successive notes on a channel reuse the lowest
-                 * free voice, matching the DRO. Chord notes (@0x0494) allocate
-                 * extra voices under the same channel id with no preceding free. */
-                opl_dev_keyoff(dev, v);
-                opl_dev_keyon(dev, v, note, adl, vol);
-                for (int k = 2; k <= 4; k++) {
-                    uint8_t cn = vc->b[k];
-                    if (cn != 0)
-                        opl_dev_keyon(dev, v, cn, adl, vol);
-                }
-            }
+            uint8_t vol = 0x7F;
+            if (cmd == 0x0C) { vol = b[7]; b[6] = 0; b[7] = 0; cmd = 0; }
+            b[12] = vol;
+            send_volume(r, dev, v);
         }
 
+        if (!any_note) {                         /* @0x104E: no note this row */
+            dispatch_row_effect(r, dev, v);
+            continue;
+        }
+
+        if (cmd == 0x03) {                       /* @0x106E: tone porta       */
+            set_tone_porta_target(r, v);         /*   retarget, do NOT key    */
+            dispatch_row_effect(r, dev, v);
+            continue;
+        }
+
+        /* @0x1074: dispatch the row effect first (0x1F clears b[1] here), then
+         * key the primary note (es:0x08) and up to three chord notes (es:0x0C),
+         * all under the same logical channel id `v`. */
         dispatch_row_effect(r, dev, v);
+
+        int vol = (b[12] * 63) / 127;
+        if (b[1] != 0)
+            key_primary(r, dev, v, b[1], adl, vol);
+        for (int k = 2; k <= 4; k++)
+            if (b[k] != 0 && dev)
+                opl_dev_keyon(dev, v, b[k], adl, vol);
     }
 }
 
 /* tick_effects @0x10E3: per-tick processing on the non-row ticks (jump table
- * @0x1103). Volume slide (0x10) is implemented; portamento (0x01/0x02/0x03) and
- * note-delay (0x1E) operate on period/timing state not modelled here. */
+ * @0x1103). Implements porta up/down (0x01/0x02), tone porta (0x03), volume
+ * slide (0x0A), arpeggio/strum (0x1E) and note retrigger (0x1F). */
 static void tick_effects(Replay *r, opl_dev *dev)
 {
     for (int v = 0; v < r->voice_count; v++) {
-        RVoice *vc = &r->voice[v];
-        if (vc->b[6] == 0 && vc->b[7] == 0) continue;   /* @0x10E6: cmd|prm   */
+        RVoice  *vc = &r->voice[v];
+        uint8_t *b  = vc->b;
+        if (b[6] == 0 && b[7] == 0) continue;    /* @0x10E6: cmd|prm == 0     */
 
-        if (vc->b[6] == 0x10) {                  /* @0x1201: volume slide    */
-            uint8_t prm = vc->b[7];
-            int vol = vc->b[12];
-            uint8_t up = (uint8_t)(prm >> 4);
-            if (up) {
-                vol += up * 2;                   /* shl al,1 -> *2           */
-                if (vol > 0x7F) vol = 0x7F;
-            } else {
-                vol -= (prm & 0x0F) * 2;
-                if (vol < 0) vol = 0;
+        switch (b[6]) {
+        case 0x01:                               /* @0x129D: porta up         */
+            vc->period = (uint16_t)(vc->period + b[7] * 20);
+            if (dev) opl_dev_set_period(dev, v, vc->period);
+            break;
+
+        case 0x02:                               /* @0x12B0: porta down       */
+            vc->period = (uint16_t)(vc->period - b[7] * 20);
+            if (dev) opl_dev_set_period(dev, v, vc->period);
+            break;
+
+        case 0x03: {                             /* @0x13B5: tone porta       */
+            if (b[7] != 0) { vc->tp_speed = b[7]; b[7] = 0; }  /* latch speed */
+            if (vc->tp_target == 0) break;                     /* idle        */
+            uint16_t per   = vc->period;
+            uint16_t delta = (uint16_t)(vc->tp_speed * 20);
+            if (vc->tp_dir) {                    /* slide up (add)            */
+                per = (uint16_t)(per + delta);
+                if (per < vc->tp_target) vc->period = per;
+                else { vc->period = vc->tp_target; vc->tp_target = 0; }
+            } else {                             /* slide down (sub)          */
+                per = (uint16_t)(per - delta);
+                if (per > vc->tp_target) vc->period = per;
+                else { vc->period = vc->tp_target; vc->tp_target = 0; }
             }
-            vc->b[12] = (uint8_t)vol;
-            send_volume(r, dev, v);
+            if (dev) opl_dev_set_period(dev, v, vc->period);
+            break;
         }
-        /* other per-tick effects: no-op (see note above) */
+
+        case 0x0A: {                             /* @0x1201: volume slide     */
+            uint8_t hi = (uint8_t)(b[7] >> 4);
+            int vol = b[12];
+            if (hi) { vol += hi * 2;              if (vol > 0x7F) vol = 0x7F; }
+            else    { vol -= (b[7] & 0x0F) * 2;   if (vol < 0)    vol = 0;    }
+            b[12] = (uint8_t)vol;
+            send_volume(r, dev, v);
+            break;
+        }
+
+        case 0x1E: {                             /* @0x11A0: arpeggio/strum   */
+            int use_primary = 1;                 /* dl bit 0x10 set (es:0x08) */
+            if (b[1] == 0) {                     /* no fresh note: count down */
+                uint8_t c = (uint8_t)(vc->fx_count - 1);
+                vc->fx_count = c;
+                if ((int8_t)c < 0)               /* underflowed -> reload+key */
+                    use_primary = (b[7] & 0x10) != 0;
+                else
+                    break;
+            }
+            vc->fx_count = (uint8_t)(b[7] & 0x0F);
+            uint8_t note = 0;
+            for (int k = 1; k <= 4; k++)
+                if (b[k]) { note = b[k]; b[k] = 0; break; }
+            if (note) {
+                int vol = (b[12] * 63) / 127;
+                if (use_primary) key_primary(r, dev, v, note, NULL, vol);
+                else if (dev)    opl_dev_keyon(dev, v, note, NULL, vol);
+            }
+            break;
+        }
+
+        case 0x1F: {                             /* @0x1611: note retrigger   */
+            if ((vc->fx_count & 0x0F) > 1) { vc->fx_count--; break; }
+            vc->fx_count |= (uint8_t)(vc->fx_count >> 4);   /* reload count    */
+            if (vc->retrig_note) {
+                int vol = (b[12] * 63) / 127;
+                key_primary(r, dev, v, vc->retrig_note, NULL, vol);
+            }
+            break;
+        }
+
+        default:                                 /* @0x119A/0x1200: no-op     */
+            break;
+        }
     }
 }
 

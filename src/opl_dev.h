@@ -26,6 +26,14 @@ typedef struct {
     uint8_t    shadow_a0[OPL_DEV_MAX_VOICES]; /* reg 0xA0 shadow (0x355)    */
     uint8_t    shadow_b0[OPL_DEV_MAX_VOICES]; /* reg 0xB0 shadow (0x365)    */
 
+    /* Micro-pitch state (ADLIB.DEV slot fields +2/+4/+5). base_fnum/base_block
+     * are the octave-0 F-number and block from the note table; period is the
+     * pitch-bend value (centre 0x2000, range [0,0x3fff]) the bend engine @0xe46
+     * folds back into fnum/block. A primary note-on resets period to 0x2000. */
+    uint16_t   base_fnum[OPL_DEV_MAX_VOICES];
+    uint8_t    base_block[OPL_DEV_MAX_VOICES];
+    uint16_t   period[OPL_DEV_MAX_VOICES];
+
     /* Dynamic voice allocator (ADLIB.DEV slot table @0x53C, 9 slots x 8B).
      * used[]  mirrors the slot's free-marker byte: 0 = free (0xFF), 1 = busy.
      * owner[] is the logical channel id a busy voice belongs to (-1 = free),
@@ -53,6 +61,12 @@ void opl_dev_note_off(opl_dev *d, int voice);
 
 /* Set a physical `voice`'s volume 0..63 (carrier attenuation; RE B.5). */
 void opl_dev_set_volume(opl_dev *d, int voice, int vol);
+
+/* Set the pitch-bend `period` (centre 0x2000) on every physical voice owned by
+ * logical channel `chan` and re-emit A0/B0 with the bent fnum/block (without a
+ * key retrigger). Faithful port of ADLIB.DEV es:0x24 (@0x0692 -> writer 0xe0c),
+ * driven by the replay engine's portamento effects (0x01/0x02/0x03). */
+void opl_dev_set_period(opl_dev *d, int chan, int period);
 
 /* ---- dynamic allocation layer (faithful to ADLIB.DEV es:0x08/0x0C/0x10) ---
  * `chan` is the caller's logical channel id (ADLIB.DEV's `bl` slot marker).

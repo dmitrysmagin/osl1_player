@@ -31,9 +31,31 @@
  *   b[6]      effect command
  *   b[7]      effect parameter
  *   b[12]     current volume (0..0x7F)
- *   b[14]     last note played
+ *   b[14]     last instrument uploaded (trigger_note @0x1024 compares instr-1
+ *             here to skip a redundant es:0x14 patch upload; we re-upload
+ *             unconditionally, which is harmless)
  */
-typedef struct { uint8_t b[RVOICE_SIZE]; } RVoice;
+typedef struct {
+    uint8_t b[RVOICE_SIZE];
+
+    /* Effect-engine state. In TRACKER.DRV these live in the same voice block
+     * as the decoded cell (DOS offsets shown); we keep them as named members
+     * so they never alias the 8-byte cell the row decoder rewrites in b[1..8]:
+     *   period      [di+0x09]  pitch period, centre 0x2000 (porta 0x01/02/03)
+     *   tp_target   [di+0x0b]  tone-porta target period (0 = idle)
+     *   tp_dir      [di+0x0d]  tone-porta direction (0 = down, 1 = up)
+     *   tp_speed    [di+0x0e]  tone-porta speed
+     *   fx_count    [di+0x0f]  arpeggio (0x1E) / retrigger (0x1F) counter
+     *   retrig_note [di+0x10]  saved note for effect 0x1F
+     *   base_note   [di+0x11]  note that period 0x2000 maps to (porta anchor) */
+    uint16_t period;
+    uint16_t tp_target;
+    uint8_t  tp_dir;
+    uint8_t  tp_speed;
+    uint8_t  fx_count;
+    uint8_t  retrig_note;
+    uint8_t  base_note;
+} RVoice;
 
 typedef struct {
     const Song *song;

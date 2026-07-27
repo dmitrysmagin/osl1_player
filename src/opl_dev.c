@@ -22,6 +22,88 @@ static const uint8_t OP_OFF[9] = {
 /* Register bank for a voice: voices 0-8 -> bank 0, 9-17 -> 0x100 (OPL3). */
 static uint16_t voice_bank(int voice) { return voice >= 9 ? 0x100 : 0x000; }
 
+/* ---- micro-pitch bend engine (ADLIB.DEV 0xe46/0xe80/0xfa9) --------------- *
+ * The period at slot+5 is a 14-bit pitch value centred on 0x2000. The bend
+ * routine converts a period offset from centre into an F-number/block delta by
+ * a piecewise-linear interpolation over the F-number table @0xf61, using the
+ * per-note index map @0xf11. Ported verbatim so a portamento sweep reproduces
+ * the DOS driver's exact stair-stepped fnum path (diffable against a DRO).
+ *
+ * f11 @0xf11 stores BYTE offsets into f61 (element index = value/2).
+ * f61 is preceded in the driver's data segment by the 24-word table @0xf31;
+ * the down-bend reads negative indices into it (e.g. f61[-1] @0xf5f = 0x0145),
+ * so f61c[] carries both, with F61_BASE marking f61[0]. */
+#define F61_BASE 24
+static const uint16_t f61c[24 + 36] = {
+    /* @0xf31: 24 words the down-bend may reach via negative indices */
+    0x0055,0x005b,0x0060,0x0066,0x006c,0x0072,0x0079,0x0080,
+    0x0088,0x0090,0x0099,0x00a2,0x00ab,0x00b6,0x00c0,0x00cc,
+    0x00d8,0x00e5,0x00f3,0x0101,0x0111,0x0121,0x0133,0x0145,
+    /* @0xf61: F-numbers across three octaves */
+    0x0157,0x016c,0x0181,0x0198,0x01b1,0x01cb,0x01e6,0x0203,
+    0x0222,0x0243,0x0266,0x028a,0x02ae,0x02d8,0x0302,0x0330,
+    0x0362,0x0396,0x03cc,0x0406,0x0444,0x0486,0x04cc,0x0514,
+    0x055c,0x05b0,0x0604,0x0660,0x06c4,0x072c,0x0798,0x080c,
+    0x0888,0x090c,0x0998,0x0a28
+};
+static const uint16_t f11[16] = {
+    0x0000,0x0002,0x0004,0x0006,0x0008,0x000a,0x0000,0x000c,
+    0x000e,0x0000,0x0010,0x0012,0x0000,0x0014,0x0000,0x0016
+};
+
+/* f61 indexed by a signed element offset relative to f61[0]. */
+static uint16_t f61e(int i) { return f61c[F61_BASE + i]; }
+
+/* Fold `period` (centre 0x2000) into the base note's fnum/block, returning the
+ * bent F-number (*out_fnum) and block (*out_block). Mirrors 0xe46 exactly. */
+static void bend_pitch(uint16_t base_fnum, uint8_t base_block, uint16_t period,
+                       uint16_t *out_fnum, uint8_t *out_block)
+{
+    int ax = (int16_t)period;              /* 0xe49 'jns' tests the sign  */
+    if (ax < 0) ax = 0;                    /* 0xe4d                        */
+    if (ax >= 0x3fff) ax = 0x3fff;         /* 0xe4f/0xe54                  */
+    int off = ax - 0x2000;                 /* 0xe57                        */
+
+    uint16_t dx = base_fnum;
+    int      cl = base_block;
+
+    if (off != 0) {
+        /* base element index within f61 for this note's octave-0 fnum. */
+        int base_off = f11[((base_fnum - 0x157) / 20) & 0xf];  /* byte off */
+        int idx_b    = base_off / 2;                           /* element  */
+        unsigned mag = (unsigned)(off > 0 ? off : -off);
+        unsigned q   = (mag * 4) / 0x55;                       /* 0xe81/0xfcd */
+        int coff     = (int)((q >> 3) & 0xfe) / 2;             /* elements */
+        int fineq    = (int)(q & 0x0f);
+
+        if (off > 0) {                     /* up-bend 0xe80                */
+            int coarse = (int)f61e(idx_b + coff) - (int)f61e(idx_b);
+            int slope  = (int)f61e(idx_b + 1)    - (int)f61e(idx_b);
+            int fine   = (slope * fineq) >> 4;
+            int v      = (int)base_fnum + coarse + fine;
+            if      (v >= 0xab8) { v = ((v - 0xab8) >> 3) + 0x157; cl += 3; }
+            else if (v >= 0x55c) { v = ((v - 0x55c) >> 2) + 0x157; cl += 2; }
+            else if (v >= 0x2ae) { v = ((v - 0x2ae) >> 1) + 0x157; cl += 1; }
+            dx = (uint16_t)v;
+        } else {                           /* down-bend 0xfa9              */
+            int coarse = (int)f61e(idx_b) - (int)f61e(idx_b - coff);
+            int slope  = (int)f61e(idx_b) - (int)f61e(idx_b - 1); /* 0xf5f */
+            int fine   = (slope * fineq) >> 4;
+            int v      = (int)base_fnum - (coarse + fine);
+            if (v <= 0x157) {
+                if      (v > 0xab) { v = ((v - 0xab) << 1) + 0x157; cl -= 1; }
+                else if (v > 0x55) { v = ((v - 0x55) << 2) + 0x157; cl -= 2; }
+                else               { v = ((v - 0x2a) << 3) + 0x157; cl -= 3; }
+            }
+            dx = (uint16_t)v;
+        }
+    }
+
+    if (cl < 0) cl = 0;
+    *out_fnum  = dx;
+    *out_block = (uint8_t)cl;
+}
+
 static void wr(opl_dev *d, uint16_t reg, uint8_t val)
 {
     if (d->trace) fprintf(d->trace, "%03X=%02X\n", reg, val);
@@ -89,6 +171,42 @@ void opl_dev_program(opl_dev *d, int voice, const uint8_t *adl)
     wr(d, bank + 0xC0 + ch, (uint8_t)(adl[10] | 0x30));
 }
 
+/* Emit A0/B0 for `voice` from its base fnum/block bent by its current period
+ * (pitch writer 0xe0c). With `retrigger` set we restart the OPL envelope (a
+ * fresh attack) by pulsing KEYON off->on; otherwise we preserve the current
+ * KEYON bit, exactly as the 0xe0c path does when only re-pitching. */
+static void emit_pitch(opl_dev *d, int voice, int retrigger)
+{
+    uint16_t fnum;
+    uint8_t  block;
+    bend_pitch(d->base_fnum[voice], d->base_block[voice], d->period[voice],
+               &fnum, &block);
+
+    int      ch   = voice % 9;
+    uint16_t bank = voice_bank(voice);
+    uint8_t  a0   = (uint8_t)(fnum & 0xFF);
+    uint8_t  keyon = (uint8_t)(d->shadow_b0[voice] & 0x20);
+    uint8_t  b0   = (uint8_t)(((fnum >> 8) & 0x03) | (block << 2));
+
+    d->shadow_a0[voice] = a0;
+
+    if (retrigger) {
+        /* MED restarts the envelope on every keyed note: write fnum low, then
+         * B0 with KEYON clear, then B0 with KEYON set. Without the intermediate
+         * key-off the envelope never re-attacks and notes slur together.
+         * Verified against a DOSBox OPL capture: A5=57 B5=11 B5=31. */
+        d->shadow_b0[voice] = (uint8_t)(b0 | 0x20);
+        wr(d, bank + 0xA0 + ch, a0);
+        wr(d, bank + 0xB0 + ch, b0);                        /* KEYON clear */
+        wr(d, bank + 0xB0 + ch, (uint8_t)(b0 | 0x20));      /* KEYON set   */
+    } else {
+        /* 0xe0c: keep the live KEYON bit, just re-pitch (portamento). */
+        d->shadow_b0[voice] = (uint8_t)(b0 | keyon);
+        wr(d, bank + 0xA0 + ch, a0);
+        wr(d, bank + 0xB0 + ch, (uint8_t)(b0 | keyon));
+    }
+}
+
 void opl_dev_note_on(opl_dev *d, int voice, int note)
 {
     if (voice < 0 || voice >= d->voice_count) return;
@@ -99,27 +217,22 @@ void opl_dev_note_on(opl_dev *d, int voice, int note)
     int n = note - 12;
     if (n < 0) n = 0;
 
-    uint16_t fnum  = FNUM[n % 12];
-    uint8_t  block = (uint8_t)(n / 12);
-    if (block > 7) block = 7;
+    d->base_fnum[voice]  = FNUM[n % 12];
+    d->base_block[voice] = (uint8_t)(n / 12 > 7 ? 7 : n / 12);
+    d->period[voice]     = 0x2000;   /* primary note-on resets bend (@0x475) */
 
-    int      ch   = voice % 9;
-    uint16_t bank = voice_bank(voice);
+    emit_pitch(d, voice, 1);
+}
 
-    uint8_t a0 = (uint8_t)(fnum & 0xFF);
-    uint8_t b0 = (uint8_t)(((fnum >> 8) & 0x03) | (block << 2) | 0x20 /*KEYON*/);
-
-    d->shadow_a0[voice] = a0;
-    d->shadow_b0[voice] = b0;
-
-    /* Retrigger so the OPL envelope restarts (a fresh attack) on every keyed
-     * note, exactly as MED.EXE does: write the new fnum low, then B0 with KEYON
-     * *clear*, then B0 with KEYON *set*. Without the intermediate key-off the
-     * amplitude envelope never re-attacks and successive notes on a voice slur
-     * together. Verified against a DOSBox OPL capture: A5=57 B5=11 B5=31. */
-    wr(d, bank + 0xA0 + ch, a0);
-    wr(d, bank + 0xB0 + ch, (uint8_t)(b0 & ~0x20));
-    wr(d, bank + 0xB0 + ch, b0);
+void opl_dev_set_period(opl_dev *d, int chan, int period)
+{
+    /* Store the raw 16-bit period (the DOS engine only ever clamps inside the
+     * bend @0xe46), so accumulating portamento wraps exactly as it does there. */
+    for (int v = 0; v < d->voice_count; v++)
+        if (d->used[v] && d->owner[v] == chan) {
+            d->period[v] = (uint16_t)period;
+            emit_pitch(d, v, 0);
+        }
 }
 
 void opl_dev_note_off(opl_dev *d, int voice)
