@@ -24,15 +24,20 @@ void replay_init(Replay *r, const Song *song, int speed)
     r->song        = song;
     r->voice_count = (uint8_t)song->blk.track_count;
     if (r->voice_count > REPLAY_MAX_VOICES) r->voice_count = REPLAY_MAX_VOICES;
-    r->speed       = (uint8_t)(speed > 0 ? speed : 6);
+
+    /* Song setup @0x415: speed = block+0x2C, tempo = block+0x2A, restart order
+     * = block+0x10. A positive `speed` argument (the CLI --speed override) wins;
+     * otherwise use the file's value, falling back to 6 if the field is 0. */
+    r->speed       = (uint8_t)(speed > 0 ? speed
+                             : song->blk.speed ? song->blk.speed : 6);
     r->tick        = 0;
     r->order_idx   = 0;
-    r->restart_idx = 0;
+    r->restart_idx = song->blk.restart_idx;
     r->order_len   = song->blk.order_count;
     r->pos         = 0;
     r->cursor      = 0;
     r->row_limit   = song->blk.row_count ? song->blk.row_count : 1;
-    r->tempo       = 50;          /* PIT default (init_timer @0xEE: tempo=0x32) */
+    r->tempo       = song->blk.tempo ? song->blk.tempo : 50;  /* set_tempo @0x422 */
 
     /* Every voice starts pitch-centred (period 0x2000). A note-on resets this,
      * so it only matters if a portamento arrives before the first note. */

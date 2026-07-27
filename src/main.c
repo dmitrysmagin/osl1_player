@@ -409,7 +409,7 @@ static void usage(void)
         "  --trace <file>   log every OPL register write (RRR=VV) for diffing\n"
         "  --rate <hz>      output sample rate (default 48000; Nuked resamples)\n"
         "  --opl2 / --opl3  force OPL2 (9 voices) or OPL3 (18); default: auto\n"
-        "  --speed <n>      initial ticks/row (default 6)\n"
+        "  --speed <n>      initial ticks/row (default: read from the song)\n"
         "  --status         print a progress/status line\n");
 }
 
@@ -421,7 +421,7 @@ int main(int argc, char **argv)
 
     Options opt;
     opt.wav = NULL; opt.trace = NULL; opt.rate = DEFAULT_RATE;
-    opt.opl3 = -1;  opt.speed = 6;     opt.status = 0;
+    opt.opl3 = -1;  opt.speed = 0;     opt.status = 0;  /* speed 0 = from song */
 
     const char *input = NULL;
     int scale_mode = 0;

@@ -151,14 +151,15 @@ int osl1_load(const char *path, Song *song, char *errbuf, size_t errlen)
     size_t bb = song->block_off;   /* block base, file-absolute */
 
     rd_str(raw, bb + 0x00, sz, blk->subtitle, 16);
+    blk->restart_idx = (bb + 0x10 < sz) ? raw[bb + 0x10] : 0;
     blk->track_count = rd_u16(raw, bb + 0x12, sz);
     blk->row_count   = rd_u16(raw, bb + 0x14, sz);
     for (int i = 0; i < 8; i++)
         blk->defaults[i] = rd_u16(raw, bb + 0x16 + (size_t)i * 2, sz);
     blk->checksum    = rd_u16(raw, bb + 0x26, sz);
     blk->ver_c       = rd_u16(raw, bb + 0x28, sz);
-    blk->format_id   = rd_u16(raw, bb + 0x2A, sz);
-    blk->track_rel   = rd_u16(raw, bb + 0x2C, sz);
+    blk->tempo       = rd_u16(raw, bb + 0x2A, sz);
+    blk->speed       = (bb + 0x2C < sz) ? raw[bb + 0x2C] : 0;
     blk->order_count = (bb + 0x4E < sz) ? raw[bb + 0x4E] : 0;
 
     /* order table @block+0x50 */

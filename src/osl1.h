@@ -37,13 +37,14 @@ typedef struct {
 typedef struct {
     uint32_t block_off;     /* file-absolute offset of the block      */
     char     subtitle[17];  /* +0x00 16-byte null-padded subtitle     */
+    uint8_t  restart_idx;   /* +0x10 loop-restart order (driver @0x417)    */
     uint16_t track_count;   /* +0x12 */
     uint16_t row_count;     /* +0x14 */
     uint16_t defaults[8];   /* +0x16 per-track defaults (0x7F7F=rest) */
     uint16_t checksum;      /* +0x26 */
     uint16_t ver_c;         /* +0x28 */
-    uint16_t format_id;     /* +0x2A (0x0021)                         */
-    uint16_t track_rel;     /* +0x2C */
+    uint16_t tempo;         /* +0x2A timer Hz, fed to set_tempo @0x422    */
+    uint8_t  speed;         /* +0x2C initial ticks/row (driver @0x42C)    */
     uint8_t  order_count;   /* +0x4E */
     uint8_t  order[OSL1_MAX_ORDER];   /* +0x50 pattern order bytes    */
     uint32_t pos_ptr[OSL1_MAX_ORDER]; /* +0x150 file-absolute ptrs    */
