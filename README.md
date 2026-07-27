@@ -37,7 +37,7 @@ medplay --scale [patch.adl]       standalone scale/arpeggio demo
 options:
   --wav <path>     offline render (file for a song, dir for a dir)
   --trace <file>   log every OPL register write (RRR=VV) for diffing
-  --rate <hz>      output sample rate (default 49716)
+  --rate <hz>      output sample rate (default 48000; Nuked resamples)
   --opl2 / --opl3  force OPL2 (9 voices) or OPL3 (18); default: auto
   --speed <n>      initial ticks/row (default 6)
   --status         print a progress/status line
@@ -168,11 +168,14 @@ the standalone `--scale` demo.
 - Register writes go through `OPL3_WriteRegBuffered`, which models the small
   per-write ISA-bus delay so a burst of writes at a tick boundary is spread
   across samples the way a real OPL sees them.
-- Rendered with `OPL3_GenerateStream` (interleaved S16) at the native 49716 Hz.
+- Rendered with `OPL3_GenerateStream` (interleaved S16). `OPL3_Reset(&chip,
+  rate)` sets an internal resample ratio `(rate << RSM_FRAC) / 49716`, so we ask
+  for a standard device rate (48000 Hz by default) and Nuked resamples from its
+  49716 Hz native rate — the output rate is decoupled from the chip's native one.
 
 ## 6. SDL2 audio + the 50 Hz timing bridge
 Audio is the master clock. A fractional `samples_per_tick = rate / 50.0`
-(49716 / 50 = 994.32) is kept in a `double` accumulator to avoid long-run drift;
+(48000 / 50 = 960) is kept in a `double` accumulator to avoid long-run drift;
 `replay_tick()` fires each time the accumulator drains, and the gap between ticks
 is rendered with `OPL3_GenerateStream`. The `--wav` path runs the identical loop
 writing a RIFF/WAVE file for reproducible tests.

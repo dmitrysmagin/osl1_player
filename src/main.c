@@ -38,13 +38,18 @@ typedef struct {
     int         status;  /* 1 = print a progress/status line                 */
 } Options;
 
-/* Native Nuked-OPL3 sample rate; the DOS engine ticks at 50 Hz. */
-#define WAV_RATE  49716u
-#define TICK_HZ   50u
+/* Default output sample rate. This is deliberately NOT Nuked's internal
+ * 49716 Hz native rate: OPL3_Reset(chip, rate) sets an internal resample ratio
+ * (rate<<RSM_FRAC)/49716 and OPL3_GenerateStream then emits at the requested
+ * rate, so we ask for a standard device rate (48 kHz) and let Nuked resample.
+ * The DOS engine ticks at 50 Hz regardless. */
+#define DEFAULT_RATE  48000u
+#define TICK_HZ       50u
 
-/* Fractional samples-per-tick (49716/50 = 994.32): a double accumulator keeps
- * the long-run rate exact instead of dropping 0.32 frames every tick. */
-#define SAMPLES_PER_TICK ((double)WAV_RATE / (double)TICK_HZ)
+/* Fractional samples-per-tick (rate/50; e.g. 48000/50 = 960): the render/live
+ * loops keep a double accumulator so the long-run rate stays exact (no drift).
+ * Computed from the active rate at run time, not from this default. */
+#define SAMPLES_PER_TICK ((double)DEFAULT_RATE / (double)TICK_HZ)
 
 /* OPL2 (9 voices) is enough for <=9 tracks; switch to OPL3 (18) above that. */
 static int opl3_needed(const Song *song)
@@ -402,7 +407,7 @@ static void usage(void)
         "options:\n"
         "  --wav <path>     offline render (file for a song, dir for a dir)\n"
         "  --trace <file>   log every OPL register write (RRR=VV) for diffing\n"
-        "  --rate <hz>      output sample rate (default 49716)\n"
+        "  --rate <hz>      output sample rate (default 48000; Nuked resamples)\n"
         "  --opl2 / --opl3  force OPL2 (9 voices) or OPL3 (18); default: auto\n"
         "  --speed <n>      initial ticks/row (default 6)\n"
         "  --status         print a progress/status line\n");
@@ -415,7 +420,7 @@ int main(int argc, char **argv)
     signal(SIGINT, on_sigint);          /* Ctrl-C stops playback/render cleanly  */
 
     Options opt;
-    opt.wav = NULL; opt.trace = NULL; opt.rate = WAV_RATE;
+    opt.wav = NULL; opt.trace = NULL; opt.rate = DEFAULT_RATE;
     opt.opl3 = -1;  opt.speed = 6;     opt.status = 0;
 
     const char *input = NULL;
@@ -436,7 +441,7 @@ int main(int argc, char **argv)
         else { fprintf(stderr, "unexpected argument: %s\n", a); return 2; }
     }
 
-    if (opt.rate  <= 0) opt.rate  = WAV_RATE;
+    if (opt.rate  <= 0) opt.rate  = DEFAULT_RATE;
     if (opt.speed <= 0) opt.speed = 6;
 
     if (scale_mode)
@@ -481,7 +486,7 @@ static int play_scale_demo(const char *patch_path)
 
     SDL_AudioSpec want, have;
     SDL_zero(want);
-    want.freq     = 49716;          /* Nuked native rate */
+    want.freq     = DEFAULT_RATE;   /* Nuked resamples from its 49716 native */
     want.format   = AUDIO_S16SYS;
     want.channels = 2;
     want.samples  = 1024;
