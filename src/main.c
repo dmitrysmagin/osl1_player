@@ -442,7 +442,7 @@ int main(int argc, char **argv)
     }
 
     if (opt.rate  <= 0) opt.rate  = DEFAULT_RATE;
-    if (opt.speed <= 0) opt.speed = 6;
+    if (opt.speed <  0) opt.speed = 0;   /* 0 -> replay_init reads it from the song */
 
     if (scale_mode)
         return play_scale_demo(input);    /* input, if any, is the patch path */
