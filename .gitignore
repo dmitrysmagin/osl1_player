@@ -10,3 +10,6 @@ wmplay
 *.txt
 .vscode
 build
+*.trace
+*.info
+*.dro
