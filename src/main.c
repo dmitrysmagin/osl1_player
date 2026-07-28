@@ -123,10 +123,13 @@ static int render_wav(const char *songpath, const char *wavpath,
     }
     int use_opl3 = opt->opl3 < 0 ? opl3_needed(&song) : opt->opl3;
     uint32_t rate = (uint32_t)opt->rate;
-    printf("song: \"%s\" device=%s tracks=%u orders=%u (OPL%d, %u Hz)\n",
-           song.title, osl1_device_name(song.device),
+    printf("song: \"%s\" type=%s tracks=%u orders=%u (OPL%d, %u Hz)\n",
+           song.title, osl1_kind_name(song.kind),
            song.blk.track_count, song.blk.order_count,
            use_opl3 ? 3 : 2, rate);
+    if (song.kind == OSL1_KIND_MIDI || song.kind == OSL1_KIND_MIXED)
+        fprintf(stderr, "warning: %u/%u instruments are MIDI/program-only and "
+                "will be silent on OPL2\n", song.midi_instr, song.instr_valid);
 
     opl3_chip chip;
     OPL3_Reset(&chip, rate);
@@ -263,9 +266,12 @@ static int play_live(const char *songpath, const Options *opt)
         return 1;
     }
     int use_opl3 = opt->opl3 < 0 ? opl3_needed(&song) : opt->opl3;
-    printf("song: \"%s\" device=%s tracks=%u orders=%u\n",
-           song.title, osl1_device_name(song.device),
+    printf("song: \"%s\" type=%s tracks=%u orders=%u\n",
+           song.title, osl1_kind_name(song.kind),
            song.blk.track_count, song.blk.order_count);
+    if (song.kind == OSL1_KIND_MIDI || song.kind == OSL1_KIND_MIXED)
+        fprintf(stderr, "warning: %u/%u instruments are MIDI/program-only and "
+                "will be silent on OPL2\n", song.midi_instr, song.instr_valid);
 
     if (SDL_Init(SDL_INIT_AUDIO) != 0) {
         fprintf(stderr, "SDL_Init: %s\n", SDL_GetError());

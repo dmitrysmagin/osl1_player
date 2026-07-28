@@ -39,14 +39,35 @@ static void rd_str(const uint8_t *p, size_t off, size_t size,
     dst[field_len] = '\0';
 }
 
-const char *osl1_device_name(uint8_t device)
+const char *osl1_device_name(Osl1Device dev)
 {
-    switch (device) {
-        case OSL1_DEV_GENERIC: return "Generic/LAP";
-        case OSL1_DEV_ROLAND:  return "Roland RLD";
-        case OSL1_DEV_MED_LAP: return "MED LAP";
-        case OSL1_DEV_SCC:     return "Sound Blaster SCC";
-        default:               return "Unknown";
+    switch (dev) {
+        case OSL1_DEV_ADLIB:  return "Adlib (Yamaha OPL2 FM)";
+        case OSL1_DEV_SBLAST: return "Creative Sound Blaster";
+        case OSL1_DEV_LAPC1:  return "Roland LAPC-I / MT-32 (MIDI)";
+        case OSL1_DEV_SCC1:   return "Roland SCC-1 / Sound Canvas (GS)";
+        case OSL1_DEV_SNES:   return "Super Nintendo S-DSP (FIR + echo)";
+        default:              return "unknown device";
+    }
+}
+
+const char *osl1_kind_name(Osl1Kind kind)
+{
+    switch (kind) {
+        case OSL1_KIND_ADLIB: return "Adlib/OPL2 (renderable)";
+        case OSL1_KIND_MIXED: return "Mixed FM + MIDI (partly renderable)";
+        case OSL1_KIND_MIDI:  return "MIDI/program only (not OPL2-renderable)";
+        default:              return "Unknown (no valid instruments)";
+    }
+}
+
+const char *osl1_gen_name(uint8_t gen)
+{
+    switch (gen) {
+        case OSL1_GEN_0: return "revision 0";
+        case OSL1_GEN_2: return "revision 2";
+        case OSL1_GEN_4: return "revision 4";
+        default:         return "revision ? (unrecognised)";
     }
 }
 
@@ -89,7 +110,7 @@ int osl1_load(const char *path, Song *song, char *errbuf, size_t errlen)
     }
     song->version     = raw[0x04];
     song->constant    = rd_u16(raw, 0x05, sz);
-    song->device      = raw[0x07];
+    song->gen         = raw[0x07];
     rd_str(raw, 0x28, sz, song->title, 30);
     song->block_off   = rd_u32(raw, 0x48, sz);
     song->instr_count = rd_u16(raw, 0x4C, sz);
@@ -131,6 +152,23 @@ int osl1_load(const char *path, Song *song, char *errbuf, size_t errlen)
                 size_t db = (size_t)w1 + 0x2E + b;
                 ins->adl[b] = (db < sz) ? raw[db] : 0;
             }
+
+            /* ---- heuristic synth/renderability probe -------------------- *
+             * +0x24 is a per-instrument synth-type code (2/4 = OPL2 FM,
+             * 8 = MIDI/program). The decisive, robust signal is whether the
+             * 11-byte OPL2 patch at +0x2E carries real operator data: FM
+             * patches have ~7-9 non-zero bytes, MIDI/program records have 0-1
+             * (just a GM program number at +0x30). Threshold of 4 cleanly
+             * separates the two across the whole corpus. */
+            ins->synth   = ((size_t)w1 + 0x24 < sz) ? raw[w1 + 0x24] : 0;
+            ins->program = ((size_t)w1 + 0x30 < sz) ? raw[w1 + 0x30] : 0;
+            int fm_nz = 0;
+            for (int b = 0; b < 11; b++)
+                if (ins->adl[b]) fm_nz++;
+            ins->fm = (fm_nz >= 4);
+            if (ins->fm) song->fm_instr++;
+            else         song->midi_instr++;
+
             last_valid_off = w1;
             have_last = 1;
             valid++;
@@ -140,6 +178,16 @@ int osl1_load(const char *path, Song *song, char *errbuf, size_t errlen)
     }
     song->instr_total = total;
     song->instr_valid = valid;
+
+    /* ---- file-level classification from the instrument mix -------------- */
+    if (song->fm_instr == 0 && song->midi_instr == 0)
+        song->kind = OSL1_KIND_UNKNOWN;
+    else if (song->midi_instr == 0)
+        song->kind = OSL1_KIND_ADLIB;
+    else if (song->fm_instr == 0)
+        song->kind = OSL1_KIND_MIDI;
+    else
+        song->kind = OSL1_KIND_MIXED;
 
     /* ---- pattern block --------------------------------------------------- */
     PatternBlock *blk = &song->blk;

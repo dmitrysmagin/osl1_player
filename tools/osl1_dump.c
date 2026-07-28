@@ -22,19 +22,23 @@ static void dump(const char *path)
     printf("  Header:\n");
     printf("    version       %u\n", s.version);
     printf("    constant      0x%04X\n", s.constant);
-    printf("    device        %u (%s)\n", s.device, osl1_device_name(s.device));
+    printf("    gen (@0x07)   0x%02X (%s)\n", s.gen, osl1_gen_name(s.gen));
+    printf("    type (heur)   %s\n", osl1_kind_name(s.kind));
     printf("    title         \"%s\"\n", s.title);
     printf("    block_off     0x%08X\n", s.block_off);
-    printf("    instr_count   %u (%u valid)\n", s.instr_count, s.instr_valid);
+    printf("    instr_count   %u (%u valid: %u FM, %u MIDI)\n",
+           s.instr_count, s.instr_valid, s.fm_instr, s.midi_instr);
     printf("    instr_size    %u (0x%04X)\n\n", s.instr_size, s.instr_size);
 
     printf("  Instruments (%u table entries):\n", s.instr_total);
-    printf("    #   off     len   p1     p2     name                  adl[0..15]\n");
+    printf("    #   off     len   syn  kind prog name                  adl[0..15]\n");
     for (uint16_t i = 0; i < s.instr_total; i++) {
         const Instrument *in = &s.instr[i];
-        printf("   %s%2u  0x%04X  %5u  0x%04X 0x%04X %-20s ",
-               in->valid ? " " : "*", i, in->offset, in->len, in->p1, in->p2,
-               in->name);
+        printf("   %s%2u  0x%04X  %5u  0x%02X %-4s %3u  %-20s ",
+               in->valid ? " " : "*", i, in->offset, in->len,
+               in->valid ? in->synth : 0,
+               in->valid ? (in->fm ? "FM" : "MIDI") : "-",
+               in->valid ? in->program : 0, in->name);
         if (in->valid) {
             for (int b = 0; b < 16; b++) printf("%02x", in->adl[b]);
         }

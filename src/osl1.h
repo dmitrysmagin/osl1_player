@@ -16,13 +16,56 @@
 #define OSL1_MAX_INSTR  256
 #define OSL1_MAX_ORDER  256
 
-/* Device-type byte at header offset 0x07. */
+/* Header byte @0x07 was previously assumed to be a device-type selector. That
+ * is WRONG: MED.EXE does not tag OSL1 files by sound card at all. The container
+ * is device-agnostic - each instrument record carries sub-data for whichever of
+ * MED's five drivers is loaded (see osl1_device_name()), and one file can mix
+ * instruments voiced on different devices. Across the whole corpus @0x07 only
+ * ever holds 0x00, 0x02 or 0x04 and does not track the extension (.ADL/.SCC/
+ * .RLD from one project all share 0x02). It is a format-revision/generation
+ * counter, not a device id. The playable nature of a file is derived from its
+ * instrument data instead - see Osl1Kind below. */
 enum {
-    OSL1_DEV_GENERIC = 0,   /* Adlib/LAP (Generic) */
-    OSL1_DEV_ROLAND  = 2,   /* Roland RLD          */
-    OSL1_DEV_MED_LAP = 4,   /* MED LAP             */
-    OSL1_DEV_SCC     = 8    /* Sound Blaster SCC   */
+    OSL1_GEN_0 = 0x00,  /* oldest observed revision                           */
+    OSL1_GEN_2 = 0x02,  /* mid revision                                       */
+    OSL1_GEN_4 = 0x04   /* newest observed revision                           */
 };
+
+/* The sound devices MED.EXE drives, each via its own driver (ADLIB.DEV,
+ * SBLAST.DEV, LAPC1.DEV, SCC1.DEV, plus a Super Nintendo target). Confirmed by
+ * disassembly/strings of MED.EXE: the per-device extended-command help proves
+ * the identities - "SNES Help." lists the S-DSP 8-tap FIR filter coefficients
+ * and echo unit, while "SCC1 Help." lists Roland GS reverb macros (Room/Hall/
+ * Plate/Delay) and chorus macros (Chorus 1-4/Flanger). NOTE: the device is a
+ * per-instrument editor choice ("Device:" field) / loaded-driver choice; OSL1
+ * itself is device-agnostic and stores no reliable device id, so this enum is
+ * for reference/labelling only - use Osl1Kind for what is actually renderable. */
+typedef enum {
+    OSL1_DEV_ADLIB = 0,  /* ADLIB.DEV  - Yamaha OPL2 FM                        */
+    OSL1_DEV_SBLAST,     /* SBLAST.DEV - Creative Sound Blaster               */
+    OSL1_DEV_LAPC1,      /* LAPC1.DEV  - Roland LAPC-I / MT-32 (MIDI)         */
+    OSL1_DEV_SCC1,       /* SCC1.DEV   - Roland SCC-1 / Sound Canvas (GS)     */
+    OSL1_DEV_SNES        /* Super Nintendo S-DSP (FIR filter + echo)          */
+} Osl1Device;
+
+/* Per-instrument synth-type code at record +0x24. This DOES reliably describe
+ * how the instrument is voiced (verified across the corpus). */
+enum {
+    OSL1_SYNTH_FM_SHORT = 0x02,  /* 58-byte record: one 11-byte OPL2 patch    */
+    OSL1_SYNTH_FM_EXT   = 0x04,  /* 286-byte MED-native record: FM + params   */
+    OSL1_SYNTH_MIDI     = 0x08   /* 170-byte record: GM program, no FM data   */
+};
+
+/* Heuristic renderability classification derived from the instrument mix.
+ * Since neither the extension nor any header byte reliably names the target
+ * device, we classify a file by whether its instruments carry usable OPL2 FM
+ * patches - i.e. by what the Adlib player can actually render. */
+typedef enum {
+    OSL1_KIND_UNKNOWN = 0,  /* no valid instruments                          */
+    OSL1_KIND_ADLIB,        /* every valid instrument has an OPL2 FM patch    */
+    OSL1_KIND_MIXED,        /* mix of FM and MIDI/program instruments         */
+    OSL1_KIND_MIDI          /* only MIDI/program instruments (no FM) -> mute  */
+} Osl1Kind;
 
 typedef struct {
     int      valid;         /* passed the table-consistency checks   */
@@ -31,7 +74,10 @@ typedef struct {
     uint16_t p1;            /* +0x04 param 1 (fine tune?)             */
     uint16_t p2;            /* +0x06 param 2 (volume?)                */
     char     name[21];      /* +0x0A 20-byte null-padded name         */
-    uint8_t  adl[16];       /* +0x1E first 16 bytes = OPL2 ADL patch  */
+    uint8_t  adl[16];       /* +0x2E OPL2 ADL patch (11 bytes used)   */
+    uint8_t  synth;         /* +0x24 synth-type code (see OSL1_SYNTH_*)*/
+    uint8_t  program;       /* +0x30 GM program (valid when !fm)      */
+    int      fm;            /* has a usable OPL2 FM patch at +0x2E    */
 } Instrument;
 
 typedef struct {
@@ -51,7 +97,7 @@ typedef struct {
 } PatternBlock;
 
 typedef struct {
-    uint8_t      device;        /* +0x07 device type                  */
+    uint8_t      gen;           /* +0x07 format-generation (see OSL1_GEN_*) */
     uint8_t      version;       /* +0x04 */
     uint16_t     constant;      /* +0x05 */
     char         title[31];     /* +0x28 30-byte null-padded title    */
@@ -61,6 +107,9 @@ typedef struct {
 
     uint16_t     instr_total;   /* number of table entries parsed     */
     uint16_t     instr_valid;   /* number that passed validation      */
+    uint16_t     fm_instr;      /* valid instruments with an FM patch */
+    uint16_t     midi_instr;    /* valid MIDI/program-only instruments*/
+    Osl1Kind     kind;          /* heuristic renderability class      */
     Instrument   instr[OSL1_MAX_INSTR];
 
     PatternBlock blk;
@@ -75,7 +124,15 @@ typedef struct {
 int  osl1_load(const char *path, Song *song, char *errbuf, size_t errlen);
 void osl1_free(Song *song);
 
-/* Human-readable name for a device-type byte. */
-const char *osl1_device_name(uint8_t device);
+/* Human-readable name for one of MED.EXE's five target devices. For
+ * reference/labelling only - OSL1 stores no reliable device id (see the
+ * Osl1Device comment); use osl1_kind_name() for what is actually renderable. */
+const char *osl1_device_name(Osl1Device dev);
+
+/* Human-readable name for the heuristic renderability classification. */
+const char *osl1_kind_name(Osl1Kind kind);
+
+/* Human-readable name for the format-generation byte (@0x07). */
+const char *osl1_gen_name(uint8_t gen);
 
 #endif /* MEDPLAY_OSL1_H */

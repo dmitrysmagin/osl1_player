@@ -31,8 +31,8 @@ int main(int argc, char **argv)
         return 1;
     }
 
-    printf("device=%s title=\"%s\" tracks=%u rows=%u orders=%u\n",
-           osl1_device_name(song.device), song.title,
+    printf("type=%s title=\"%s\" tracks=%u rows=%u orders=%u\n",
+           osl1_kind_name(song.kind), song.title,
            song.blk.track_count, song.blk.row_count, song.blk.order_count);
 
     Replay r;
