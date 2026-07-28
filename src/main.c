@@ -57,6 +57,38 @@ static int opl3_needed(const Song *song)
     return song->blk.track_count > 9;
 }
 
+/* Human-readable name for the per-instrument synth-type code (record +0x24). */
+static const char *synth_name(uint8_t syn)
+{
+    switch (syn) {
+        case OSL1_SYNTH_FM_SHORT: return "FM-short";
+        case OSL1_SYNTH_FM_EXT:   return "FM-ext";
+        case OSL1_SYNTH_MIDI:     return "MIDI";
+        default:                  return "?";
+    }
+}
+
+/* List every instrument table entry with its synth type, so it is obvious at a
+ * glance which instruments are OPL2 FM (audible) and which are MIDI/program
+ * (silent on Adlib). Invalid/padding entries are marked with '*'. */
+static void print_instruments(const Song *song)
+{
+    printf("instruments: %u entries, %u valid (%u FM, %u MIDI)\n",
+           song->instr_total, song->instr_valid,
+           song->fm_instr, song->midi_instr);
+    for (uint16_t i = 0; i < song->instr_total; i++) {
+        const Instrument *in = &song->instr[i];
+        if (!in->valid) {
+            printf("  *%-2u  (invalid)\n", i);
+            continue;
+        }
+        printf("   %-2u  syn=0x%02X %-8s %-4s  %-20s", i, in->synth,
+               synth_name(in->synth), in->fm ? "FM" : "MIDI", in->name);
+        if (!in->fm) printf("  GM prog %u", in->program);
+        printf("\n");
+    }
+}
+
 /* Seed every replay voice with a real song instrument so an OPL channel that
  * is keyed before its first per-note program upload still has a valid timbre.
  * The audible path is opl_dev_program driven per note by replay.c (instrument
@@ -130,6 +162,7 @@ static int render_wav(const char *songpath, const char *wavpath,
     if (song.kind == OSL1_KIND_MIDI || song.kind == OSL1_KIND_MIXED)
         fprintf(stderr, "warning: %u/%u instruments are MIDI/program-only and "
                 "will be silent on OPL2\n", song.midi_instr, song.instr_valid);
+    print_instruments(&song);
 
     opl3_chip chip;
     OPL3_Reset(&chip, rate);
@@ -272,6 +305,7 @@ static int play_live(const char *songpath, const Options *opt)
     if (song.kind == OSL1_KIND_MIDI || song.kind == OSL1_KIND_MIXED)
         fprintf(stderr, "warning: %u/%u instruments are MIDI/program-only and "
                 "will be silent on OPL2\n", song.midi_instr, song.instr_valid);
+    print_instruments(&song);
 
     if (SDL_Init(SDL_INIT_AUDIO) != 0) {
         fprintf(stderr, "SDL_Init: %s\n", SDL_GetError());
