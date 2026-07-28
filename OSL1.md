@@ -148,8 +148,10 @@ determine the record's total size and meaning.
 | +0x04  | u16       | p1       | Constant `0x0001` corpus-wide; never read by the driver. Inert metadata **(inferred)**. |
 | +0x06  | u16       | p2       | Constant `0x0006` corpus-wide; never read by the driver. Inert metadata **(inferred)**. |
 | +0x0A  | char[20]  | name     | Instrument name, NUL-padded.                                |
-| +0x1E  | u8        | transpose | In the driver's *runtime* record: per-instrument transpose accumulator. The on-disk byte is transformed by `MED.EXE` at load; its raw on-disk meaning is not fully reversed **(unverified)**. |
-| +0x1F  | u8        | vol_cap   | In the driver's *runtime* record: volume ceiling. Same load-transform caveat as `+0x1E` **(unverified)**. |
+| +0x1E  | u8        | (runtime) | Consumed by the driver's *runtime* record after load; raw on-disk meaning not fully reversed **(unverified)**. Earlier drafts guessed "transpose" here — the real note transpose is `+0x22` (see below). |
+| +0x1F  | u8        | vol_cap   | Volume ceiling in the driver's runtime record **(unverified)**. |
+| +0x22  | s8        | transpose | **Signed per-instrument note transpose in semitones.** Added to the pattern note before the OPL note→F-number/block conversion. Confirmed against `COLUMBIA.ADL` vs its DRO capture (`LOGDRUM1` = −24, `"saw synth"`/`OBOE1` = +12): without it the drum kit renders two octaves too high. Corpus-wide 99.9% of values lie in ±36 semitones and 90.7% are exact octave multiples (0/±12/±24) **(confirmed)**. |
+| +0x23  | u8        | (tuning?) | Almost always `0x7F`; likely a fine-tune/level centre **(unverified)**. |
 | +0x24  | u8        | synth     | Synth-type code (see §6.2).                                  |
 
 ### 6.2 Synth-type codes (`+0x24`)
@@ -411,12 +413,11 @@ either editor metadata or unused by the Adlib replay path.
 
 **Instrument record (FM)**
 ```
-0x00 u16 length         0x24 u8  synth (0x02/0x04)
-0x04 u16 p1 (inert)     0x2E [11] OPL2 patch
-0x06 u16 p2 (inert)     0x3A.. FM-ext editor tail (0x04 only)
-0x0A char[20] name
-0x1E u8  transpose*     (*runtime record; load-transformed)
-0x1F u8  vol_cap*
+0x00 u16 length         0x22 s8  transpose (semitones, signed)
+0x04 u16 p1 (inert)     0x24 u8  synth (0x02/0x04)
+0x06 u16 p2 (inert)     0x2E [11] OPL2 patch
+0x0A char[20] name      0x3A.. FM-ext editor tail (0x04 only)
+0x1E u8  (runtime)      0x1F u8  vol_cap (runtime)
 ```
 
 **Instrument record (MIDI, 0x08)**

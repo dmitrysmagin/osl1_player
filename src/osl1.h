@@ -77,6 +77,7 @@ typedef struct {
     uint8_t  adl[16];       /* +0x2E OPL2 ADL patch (11 bytes used)   */
     uint8_t  synth;         /* +0x24 synth-type code (see OSL1_SYNTH_*)*/
     uint8_t  program;       /* +0x30 GM program (valid when !fm)      */
+    int8_t   transpose;     /* +0x22 signed per-instrument transpose  */
     int      fm;            /* has a usable OPL2 FM patch at +0x2E    */
 } Instrument;
 

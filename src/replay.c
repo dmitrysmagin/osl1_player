@@ -15,6 +15,17 @@ static const uint8_t ALIGN_TAB[17] = {
 
 static uint16_t ru16(const uint8_t *p) { return (uint16_t)(p[0] | (p[1] << 8)); }
 
+/* Apply a voice's current instrument transpose (+0x22) to a raw pattern note,
+ * clamped to the OPL playable range. The transpose affects only the pitch sent
+ * to the device; the engine keeps notes in raw pattern space for porta/arp. */
+static int note_pitch(const RVoice *vc, uint8_t note)
+{
+    int n = (int)note + vc->transpose;
+    if (n < 1)   n = 1;
+    if (n > 127) n = 127;
+    return n;
+}
+
 /* helper kept tiny so the window load below reads cleanly */
 static int flagsbit(uint16_t flags, uint16_t mask) { return (flags & mask) != 0; }
 
@@ -184,7 +195,7 @@ static void key_primary(Replay *r, opl_dev *dev, int v, uint8_t note,
     vc->base_note = note;
     if (dev) {
         opl_dev_keyoff(dev, v);
-        opl_dev_keyon(dev, v, note, adl, vol);
+        opl_dev_keyon(dev, v, note_pitch(vc, note), adl, vol);
     }
 }
 
@@ -290,8 +301,10 @@ static void trigger_row(Replay *r, opl_dev *dev)
             if (b[5] >= 2) {
                 int idx = b[5] - 2;
                 if (idx >= 0 && idx < r->song->instr_total &&
-                    r->song->instr[idx].valid)
+                    r->song->instr[idx].valid) {
                     adl = r->song->instr[idx].adl;
+                    vc->transpose = r->song->instr[idx].transpose;
+                }
             }
             uint8_t vol = 0x7F;
             if (cmd == 0x0C) { vol = b[7]; b[6] = 0; b[7] = 0; cmd = 0; }
@@ -320,7 +333,7 @@ static void trigger_row(Replay *r, opl_dev *dev)
             key_primary(r, dev, v, b[1], adl, vol);
         for (int k = 2; k <= 4; k++)
             if (b[k] != 0 && dev)
-                opl_dev_keyon(dev, v, b[k], adl, vol);
+                opl_dev_keyon(dev, v, note_pitch(vc, b[k]), adl, vol);
     }
 }
 
@@ -390,7 +403,8 @@ static void tick_effects(Replay *r, opl_dev *dev)
             if (note) {
                 int vol = (b[12] * 63) / 127;
                 if (use_primary) key_primary(r, dev, v, note, NULL, vol);
-                else if (dev)    opl_dev_keyon(dev, v, note, NULL, vol);
+                else if (dev)    opl_dev_keyon(dev, v, note_pitch(vc, note),
+                                               NULL, vol);
             }
             break;
         }

@@ -162,6 +162,11 @@ int osl1_load(const char *path, Song *song, char *errbuf, size_t errlen)
              * separates the two across the whole corpus. */
             ins->synth   = ((size_t)w1 + 0x24 < sz) ? raw[w1 + 0x24] : 0;
             ins->program = ((size_t)w1 + 0x30 < sz) ? raw[w1 + 0x30] : 0;
+            /* +0x22 is a signed per-instrument note transpose in semitones
+             * (e.g. COLUMBIA.ADL LOGDRUM1 = -24, "saw synth" = +12). The DOS
+             * driver adds it to the pattern note before the OPL note->fnum/
+             * block conversion; without it the drum kit plays two octaves high. */
+            ins->transpose = ((size_t)w1 + 0x22 < sz) ? (int8_t)raw[w1 + 0x22] : 0;
             int fm_nz = 0;
             for (int b = 0; b < 11; b++)
                 if (ins->adl[b]) fm_nz++;

@@ -55,6 +55,10 @@ typedef struct {
     uint8_t  fx_count;
     uint8_t  retrig_note;
     uint8_t  base_note;
+    int8_t   transpose;     /* current instrument's +0x22 transpose, applied
+                             * to the note only at OPL note->pitch conversion;
+                             * base_note/retrig_note stay in raw pattern space
+                             * so porta/arp semitone deltas remain correct.   */
 } RVoice;
 
 typedef struct {
