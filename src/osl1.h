@@ -71,13 +71,20 @@ typedef struct {
     int      valid;         /* passed the table-consistency checks   */
     uint32_t offset;        /* file-absolute offset of this instrument */
     uint16_t len;           /* +0x00 total instrument data length     */
-    uint16_t p1;            /* +0x04 param 1 (fine tune?)             */
-    uint16_t p2;            /* +0x06 param 2 (volume?)                */
+    uint16_t p1;            /* +0x04 param 1 (const 1 across corpus)  */
+    uint16_t p2;            /* +0x06 param 2 (const 6 across corpus)  */
     char     name[21];      /* +0x0A 20-byte null-padded name         */
     uint8_t  adl[16];       /* +0x2E OPL2 ADL patch (11 bytes used)   */
     uint8_t  synth;         /* +0x24 synth-type code (see OSL1_SYNTH_*)*/
     uint8_t  program;       /* +0x30 GM program (valid when !fm)      */
     int8_t   transpose;     /* +0x22 signed per-instrument transpose  */
+    int8_t   finetune;      /* +0x20 signed "FineTune" editor field
+                             * (range -99..+99). Distinct from transpose.
+                             * NOT applied to pitch: every OSL replay driver
+                             * (ADLIB.DEV, SBLAST.DEV) derives pitch from the
+                             * note number via a fixed 12-per-octave table, so
+                             * finetune has no runtime effect. Parsed for
+                             * completeness/display only; 0 across the corpus. */
     int      fm;            /* has a usable OPL2 FM patch at +0x2E    */
 } Instrument;
 

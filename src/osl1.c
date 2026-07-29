@@ -167,6 +167,14 @@ int osl1_load(const char *path, Song *song, char *errbuf, size_t errlen)
              * driver adds it to the pattern note before the OPL note->fnum/
              * block conversion; without it the drum kit plays two octaves high. */
             ins->transpose = ((size_t)w1 + 0x22 < sz) ? (int8_t)raw[w1 + 0x22] : 0;
+            /* +0x20 is the per-instrument "FineTune" editor field (a signed
+             * byte, MED.EXE editor range -99..+99), separate from the +0x22
+             * transpose. It is deliberately NOT applied to pitch: both replay
+             * drivers quantise pitch to whole semitones from the note number
+             * (ADLIB.DEV note-on -> fixed fnum table @0x3B5 with the period
+             * forced to 0x2000; SBLAST.DEV DoNoteOn -> rate from FreqTable),
+             * so FineTune has no effect on playback. Parsed for display only. */
+            ins->finetune = ((size_t)w1 + 0x20 < sz) ? (int8_t)raw[w1 + 0x20] : 0;
             int fm_nz = 0;
             for (int b = 0; b < 11; b++)
                 if (ins->adl[b]) fm_nz++;

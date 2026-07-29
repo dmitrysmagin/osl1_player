@@ -150,8 +150,9 @@ determine the record's total size and meaning.
 | +0x0A  | char[20]  | name     | Instrument name, NUL-padded.                                |
 | +0x1E  | u8        | (runtime) | Consumed by the driver's *runtime* record after load; raw on-disk meaning not fully reversed **(unverified)**. Earlier drafts guessed "transpose" here — the real note transpose is `+0x22` (see below). |
 | +0x1F  | u8        | vol_cap   | Volume ceiling in the driver's runtime record **(unverified)**. |
-| +0x22  | s8        | transpose | **Signed per-instrument note transpose in semitones.** Added to the pattern note before the OPL note→F-number/block conversion. Confirmed against `COLUMBIA.ADL` vs its DRO capture (`LOGDRUM1` = −24, `"saw synth"`/`OBOE1` = +12): without it the drum kit renders two octaves too high. Corpus-wide 99.9% of values lie in ±36 semitones and 90.7% are exact octave multiples (0/±12/±24) **(confirmed)**. |
-| +0x23  | u8        | (tuning?) | Almost always `0x7F`; likely a fine-tune/level centre **(unverified)**. |
+| +0x20  | s8        | finetune  | **The editor's "FineTune" field** (signed, MED.EXE editor range −99..+99). Confirmed by disassembling MED.EXE's instrument-editor gadget handlers: Volume/Trans/FineTune edit a scratch buffer that is a byte-for-byte copy of the record (the name gadget copies 20 bytes from buffer +0x0A, pinning the base). FineTune → buffer 0x8972 = record +0x20; Trans → 0x8974 = +0x22; Volume → 0x8975 = +0x23. **It is distinct from transpose and has NO effect on replay pitch:** every OSL device driver derives pitch from the note number via a fixed 12-semitone-per-octave table (`ADLIB.DEV` note-on → fnum table @0x3B5, period forced to 0x2000; `SBLAST.DEV` `DoNoteOn` → `rate = 256 − 1000000/FreqTable[note]`). All ~15k note-ons in the DRO captures land exactly on the 12-value F-number grid, and +0x20 is `0` in all 860 corpus FM instruments. Parsed for display only **(confirmed)**. |
+| +0x22  | s8        | transpose | **The editor's "Trans" field: signed per-instrument note transpose in semitones** (editor range −24..+24). Added to the pattern note before the OPL note→F-number/block conversion. Confirmed against `COLUMBIA.ADL` vs its DRO capture (`LOGDRUM1` = −24, `"saw synth"`/`OBOE1` = +12): without it the drum kit renders two octaves too high. Corpus-wide 99.9% of values lie in ±36 semitones and 90.7% are exact octave multiples (0/±12/±24) **(confirmed)**. |
+| +0x23  | u8        | volume    | **The editor's "Volume" field** (0..0x7F, `0x7F` = max). Confirmed via the editor's Volume gadget (clamps 0x00..0x7F) at buffer 0x8975 = record +0x23 **(confirmed)**. |
 | +0x24  | u8        | synth     | Synth-type code (see §6.2).                                  |
 
 ### 6.2 Synth-type codes (`+0x24`)
@@ -413,11 +414,12 @@ either editor metadata or unused by the Adlib replay path.
 
 **Instrument record (FM)**
 ```
-0x00 u16 length         0x22 s8  transpose (semitones, signed)
-0x04 u16 p1 (inert)     0x24 u8  synth (0x02/0x04)
-0x06 u16 p2 (inert)     0x2E [11] OPL2 patch
-0x0A char[20] name      0x3A.. FM-ext editor tail (0x04 only)
-0x1E u8  (runtime)      0x1F u8  vol_cap (runtime)
+0x00 u16 length         0x20 s8  finetune ("FineTune"; NOT applied - see 6.1)
+0x04 u16 p1 (inert)     0x22 s8  transpose ("Trans", semitones, signed)
+0x06 u16 p2 (inert)     0x23 u8  volume (0..0x7F)
+0x0A char[20] name      0x24 u8  synth (0x02/0x04)
+0x1E u8  (runtime)      0x2E [11] OPL2 patch
+0x1F u8  vol_cap (rt)   0x3A.. FM-ext editor tail (0x04 only)
 ```
 
 **Instrument record (MIDI, 0x08)**
