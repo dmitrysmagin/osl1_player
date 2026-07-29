@@ -244,8 +244,15 @@ static void dispatch_row_effect(Replay *r, opl_dev *dev, int v)
     }
 
     case 0x0B:                                   /* @0x133F: position jump   */
+        /* The handler @0x133F stores order = param-1, but the sequencer's
+         * position-advance (@0xFE6) then unconditionally does `inc [si+6]`
+         * when it consumes the jump flag, so the net target order is `param`
+         * (param-1 then +1, 8-bit; param 0 wraps back to order 0). Earlier we
+         * used prm-1 which lost this post-increment and turned an intro's
+         * forward "Bxx 01" (jump into the song) into a jump-to-start loop that
+         * ended playback one position in - see test/LAPMUSIC/JUNGLE.RLD. */
         r->jump_pending = 1;
-        r->jump_order   = (uint8_t)(prm ? prm - 1 : 0);
+        r->jump_order   = prm;
         break;
 
     case 0x0C:                                   /* @0x1358: set volume      */
