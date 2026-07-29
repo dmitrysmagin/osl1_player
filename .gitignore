@@ -13,3 +13,4 @@ build
 *.trace
 *.info
 *.dro
+__pycache__

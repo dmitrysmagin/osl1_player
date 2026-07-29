@@ -1,0 +1,229 @@
+
+*********  ADLIB DRIVER (Version 3.00)  **********
+
+
+INITIALISING DRIVER:
+___________________
+
+
+ Load driver into base address of segment (IE. OFFSET = 0)
+ Call Initialisation routine at base address of driver.
+ Set up interupts if required.
+
+Example:-
+
+
+	CALL DWORD PTR [init_driver]
+
+
+init_driver	dw 0,(insert base segment here)
+
+
+To set up internal interupts:
+
+
+	mov ax,0ah
+	int 60h
+
+NOTE: Remember to remove interupts when leaving program
+
+
+OR use your own interupt routine and call the main driver.
+
+	mov ax,09h
+	int 60h
+
+Note driver runs at 50hz.
+
+
+
+CALLING ROUTINES:
+________________
+
+
+
+ Load AX with routine number.
+ Load any other relevant registers.
+ Execute INT 60h instruction.
+
+Example:
+
+To start track 5:
+
+	MOV AX,03H
+	MOV CX,05H
+	INT 60H
+
+
+
+
+
+ROUTINES:
+________
+
+AX  =
+
+ 00 = Uninstall Driver.
+ 01 = Reset Driver.
+ 02 = Initialize tune data.
+ 03 = Start Track/Sfx.
+ 04 = Stop Track/Sfx.
+ 05 = Start Master Fade.
+ 06 = Get Fade Status.
+ 07 = Get interupt counter.
+ 08 = Get end flag.
+ 09 = Main interupt routine.
+ 0A = internal interupt on.
+ 0B = internal interupt off.
+
+
+The following is a detailed description of the avaliable routines:
+
+
+;***************************************************************************;
+;									    ;
+; Uninstall Sound Driver						    ;
+;									    ;
+; Enters:								    ;
+;	 ax =  00							    ;
+;									    ;
+; Returns:								    ;
+;									    ;
+;	  Carry flag set if error.					    ;
+;									    ;
+;***************************************************************************;
+
+
+
+;***************************************************************************;
+;									    ;
+; Reset Sound Driver							    ;
+;									    ;
+; Enters:								    ;
+;	 ax =  01							    ;
+;									    ;
+; Returns:								    ;
+;									    ;
+;	  Carry flag set if error.					    ;
+;									    ;
+;***************************************************************************;
+
+;***************************************************************************;
+;									    ;
+; Set up all pointers/instruments for loaded tune (initialise tune)	    ;
+;									    ;
+; Enters:								    ;
+;	 ax    =  02h							    ;
+;	 dx    = Music SEGMENT start address					    ;
+;	 si    = 0000h								    ;
+; Returns:								    ;
+;									    ;
+;	Nothing								    ;
+;									    ;
+;***************************************************************************;
+
+;***************************************************************************;
+;									    ;
+; Start tune								    ;
+;									    ;
+; Enters:								    ;
+;	 ax =  03							    ;
+;	 cx =  Start Track						    ;
+;									    ;
+; Returns:								    ;
+;									    ;
+;	 di = track handle address
+;									    ;
+;***************************************************************************;
+
+;***************************************************************************;
+;									    ;
+; Stop tune								    ;
+;									    ;
+; Enters:								    ;
+;	 ax =  04							    ;
+;        di = track address handle
+;									    ;
+; Returns:								    ;
+;									    ;
+;	  Nothing							    ;
+;									    ;
+;***************************************************************************;
+
+
+;***************************************************************************;
+;									    ;
+; Start tune fading								    ;
+;									    ;
+;     NOT IMPLEMENTED
+;									    ;
+;***************************************************************************;
+
+
+;***************************************************************************;
+;									    ;
+; Get fade status.							    ;
+;									    ;
+;     NOT IMPLEMENTED
+;									    ;
+;***************************************************************************;
+
+;***************************************************************************;
+;									    ;
+; Get interupt counter							    ;
+;									    ;
+; Enters:								    ;
+;	 ax =  07							    ;
+;									    ;
+; Returns:								    ;
+;									    ;
+;	  al = interupt counter
+;									    ;
+;***************************************************************************;
+
+;***************************************************************************;
+;									    ;
+; Get tune playing status						    ;
+;									    ;
+; Enters:								    ;
+;	  Nothing
+;									    ;
+; Returns:								    ;
+;									    ;
+;	  Nothing							    ;
+;
+; NOTE: not implemented yet.
+;									    ;
+;***************************************************************************;
+
+;***************************************************************************;
+;									    ;
+; Set internal interupts (50hz) on.					    ;
+;									    ;
+; Enters:								    ;
+;	 ax =  0ah							    ;
+;									    ;
+; Returns:								    ;
+;									    ;
+;	  Nothing							    ;
+;									    ;
+;***************************************************************************;
+
+;***************************************************************************;
+;									    ;
+; Set internal interupts (50hz) off.					    ;
+;									    ;
+; Enters:								    ;
+;	 ax =  0bh							    ;
+;									    ;
+; Returns:								    ;
+;									    ;
+;	  Nothing							    ;
+;									    ;
+;***************************************************************************;
+
+
+
+END OF FILE
+
+
