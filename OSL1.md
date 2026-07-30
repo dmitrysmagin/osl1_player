@@ -42,6 +42,11 @@ OSL1 files appear with several extensions, one per Ocean project/target:
 | `.SNS` | Super Nintendo sample banks                  |
 | `.SAV` | Editor autosaves                             |
 
+Note that **not every `.RLD` is an OSL1 file**: 311 of them are in an older,
+entirely different format that `MED.EXE` loads through a separate code path.
+They are identified by the magic `B6 9A 01` in place of `"OSL1"` and are
+specified in `OLD_RLD.md`.
+
 **The extension does not determine the playback hardware, and neither does any
 header byte.** OSL1 is a *device-agnostic* container. `MED.EXE` selects the
 target per *instrument* (its editor's "Device:" field) and via the loaded
@@ -65,7 +70,7 @@ derived from *content* — see §6 (synth codes) and §7 (heuristic class).
 
 ```
 +0x0000  File header (see §4)
-+0x0050  Instrument pointer table (see §5)
++0x004E  Instrument pointer table (see §5)
   ...    Instrument records (pointed to; see §6)          [order varies]
   ...    Pattern block (at header.block_off; see §8)
   ...    Position records (pointed to by the block; see §9)

@@ -7,9 +7,13 @@
  *     instrument present/volume table directly in the header,
  *   - stores patterns in a compressed per-row form (2 bits/track code word
  *     selecting how many of {note,instrument,effect,param} bytes follow),
+ *     always 64 rows, each pattern padded to a 16-byte boundary of its own
+ *     byte count,
  *   - stores one 256-byte instrument record per PRESENT instrument,
- *     sequentially, immediately after all pattern data (plus 16-byte
- *     alignment padding accumulated across the whole pattern stream).
+ *     sequentially, immediately after all pattern data, with the 16-byte OPL2
+ *     patch split around the 10-byte name (+0x00..+0x07, name, +0x12..+0x19).
+ *
+ * OLD_RLD.md is the full byte-level specification.
  *
  * The per-track cell coding is bit-for-bit identical to the codes used by
  * OSL1's compressed position bitstream (see decode_cell() in replay.c), so

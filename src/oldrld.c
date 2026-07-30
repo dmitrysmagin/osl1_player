@@ -219,16 +219,39 @@ int oldrld_load(Song *song, char *errbuf, size_t errlen)
 
         ins->offset = (uint32_t)rb;
         ins->len    = OLD_INSTR_BLOCK_SIZE;
-        ins->synth  = raw[rb + 0x00];
-        rd_str(raw, rb + 0x08, sz, ins->name, 10);
-        for (int b = 0; b < 16; b++)
-            ins->adl[b] = raw[rb + 0x2E + b];
-        ins->transpose = 0;   /* no reliable transpose field in this format */
-        ins->finetune  = 0;
-        {
-            size_t po = rb + 0x30;
-            ins->program = (po < sz) ? raw[po] : 0;
+
+        /* The 16-byte OPL2 patch is NOT contiguous here: the 10-byte name is
+         * embedded in the middle of it, so the block opens
+         *
+         *   +0x00..+0x07  adl[0..7]    (mod 20/40/60/80/E0, car 20/40/60)
+         *   +0x08..+0x11  name[10]
+         *   +0x12..+0x19  adl[8..15]   (car 80/E0, C0, then unused tail)
+         *
+         * i.e. exactly the OSL1 record's +0x2E..+0x3D patch and +0x0A name,
+         * re-interleaved. Established by cross-referencing every old-format
+         * instrument against the OSL1 corpus by name: 789 pairs agree on all
+         * 11 live patch bytes under this split, and none agree under any
+         * contiguous read.
+         *
+         * This previously read `adl[0..15]` straight from +0x2E, an offset
+         * carried over from the OSL1 record layout, which lands in the middle
+         * of the block's *other-device* parameter area - so every old-format
+         * instrument was voiced with unrelated bytes. See OLD_RLD.md §7. */
+        for (int b = 0; b < 8; b++) {
+            ins->adl[b]     = raw[rb + 0x00 + b];
+            ins->adl[8 + b] = raw[rb + 0x12 + b];
         }
+        rd_str(raw, rb + 0x08, sz, ins->name, 10);
+
+        /* The old format predates MED's multi-device support: every instrument
+         * is an OPL2 patch, and the block carries no synth-type or GM-program
+         * selector (+0x00 is adl[0], not a synth code as was assumed here).
+         * No transpose/finetune field has been located either - see OLD_RLD.md
+         * §7 for what the +0x1A.. tail is believed to hold. */
+        ins->synth     = OSL1_SYNTH_FM_SHORT;
+        ins->program   = 0;
+        ins->transpose = 0;
+        ins->finetune  = 0;
 
         int fm_nz = 0;
         for (int b = 0; b < 11; b++)
