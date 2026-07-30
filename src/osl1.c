@@ -5,6 +5,7 @@
  * Python dumper osl1_dump.py on OD1.ALB, SHUTIT/TITLE.ADL and ALL.LAP.
  */
 #include "osl1.h"
+#include "oldrld.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -105,6 +106,14 @@ int osl1_load(const char *path, Song *song, char *errbuf, size_t errlen)
 
     /* ---- header ---------------------------------------------------------- */
     if (memcmp(raw, "OSL1", 4) != 0) {
+        /* Not an OSL1 container. Some LAPMUSIC/OLDMUSIC .RLD files predate
+         * OSL1 and use a different magic (0xB6 0x9A 0x01); MED.EXE loads
+         * those via a separate, older code path - see oldrld.c. */
+        if (oldrld_is_old_format(raw, sz)) {
+            int rc = oldrld_load(song, errbuf, errlen);
+            if (rc != 0) osl1_free(song);
+            return rc;
+        }
         osl1_free(song);
         return fail(errbuf, errlen, "not an OSL1 file (bad signature)");
     }
