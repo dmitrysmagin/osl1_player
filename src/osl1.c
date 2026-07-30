@@ -123,9 +123,28 @@ int osl1_load(const char *path, Song *song, char *errbuf, size_t errlen)
     rd_str(raw, 0x28, sz, song->title, 30);
     song->block_off   = rd_u32(raw, 0x48, sz);
     song->instr_count = rd_u16(raw, 0x4C, sz);
-    song->instr_size  = rd_u16(raw, 0x4E, sz);
+    song->instr_tab_off = OSL1_INSTR_TAB_OFF;
+    song->instr_size  = OSL1_INSTR_SPAN;
 
-    /* ---- instrument pointer table @0x50 (one u32 entry per instrument) --- */
+    /* ---- instrument pointer table @0x4E (one u32 entry per instrument) ---
+     *
+     * The table is `instr_count` file-absolute u32 record offsets starting at
+     * 0x4E, and the records follow immediately after it. That invariant is
+     * exact: instr[0].offset == 0x4E + 4*instr_count on 304 of the 322 OSL1
+     * files in the corpus, and the other 18 simply have a NULL entry 0 (an
+     * unused slot).
+     *
+     * This used to read the table from 0x50 with the offset at entry+2, i.e.
+     * effectively from 0x52 - one entry too late. The consequence was that
+     * every song lost its instrument 0 while the *last* table entry read
+     * garbage from the first record's length field, and replay.c compensated
+     * with `idx = b[5] - 2` instead of the correct `b[5] - 1`. The two errors
+     * cancelled for selectors >= 2, so only instrument 0 was ever wrong -
+     * which is why it survived the earlier parity checks. Found by diffing
+     * medplay's register trace against test/ADLMUSIC/od1.dro: OD1.ALB's
+     * track 0 uses selector 1 (instrument 0, "Dean Bdrum", transpose -24) and
+     * medplay was dropping both the patch and the transpose, playing that
+     * bass-drum line two octaves high. */
     uint16_t total = song->instr_count;
     if (total > OSL1_MAX_INSTR) total = OSL1_MAX_INSTR;
 
@@ -134,16 +153,18 @@ int osl1_load(const char *path, Song *song, char *errbuf, size_t errlen)
     int have_last = 0;
 
     for (uint16_t i = 0; i < total; i++) {
-        size_t te = 0x50 + (size_t)i * 4;
+        size_t te = OSL1_INSTR_TAB_OFF + (size_t)i * 4;
         if (te + 4 > sz) { total = i; break; }
 
-        uint16_t w1 = rd_u16(raw, te + 2, sz);   /* offset (file-absolute) */
+        uint32_t w1 = rd_u32(raw, te, sz);       /* offset (file-absolute) */
         Instrument *ins = &song->instr[i];
         ins->offset = w1;
 
-        /* Mirror the reference validity logic: pointer must clear the header,
-         * leave room for instr_size bytes, and be strictly increasing. */
-        int ok = (w1 > 0x4F) && ((size_t)w1 + song->instr_size <= sz);
+        /* Validity: the pointer must clear the table itself, leave room for a
+         * whole record, and be strictly increasing. A NULL entry (an unused
+         * instrument slot) fails the first test and is reported invalid. */
+        int ok = (w1 >= OSL1_INSTR_TAB_OFF + (uint32_t)song->instr_count * 4) &&
+                 ((size_t)w1 + OSL1_INSTR_SPAN <= sz);
         if (ok && have_last && w1 <= last_valid_off) ok = 0;
 
         ins->valid = ok;

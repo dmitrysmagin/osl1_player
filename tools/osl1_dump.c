@@ -28,7 +28,9 @@ static void dump(const char *path)
     printf("    block_off     0x%08X\n", s.block_off);
     printf("    instr_count   %u (%u valid: %u FM, %u MIDI)\n",
            s.instr_count, s.instr_valid, s.fm_instr, s.midi_instr);
-    printf("    instr_size    %u (0x%04X)\n\n", s.instr_size, s.instr_size);
+    printf("    instr_table   0x%04X (%u u32 entries, records follow at 0x%04X)\n\n",
+           s.instr_tab_off, s.instr_count,
+           s.instr_tab_off + 4u * s.instr_count);
 
     printf("  Instruments (%u table entries):\n", s.instr_total);
     printf("    #   off     len   syn  kind prog name                  adl[0..15]\n");

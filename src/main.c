@@ -193,7 +193,15 @@ static int render_wav(const char *songpath, const char *wavpath,
     size_t frames = 0;
     int last_order = -1;
 
+    /* Absolute playback time, in ms, of the tick we are about to run. Emitted
+     * into the register trace as `; t <ms>` comment lines so that trace can be
+     * aligned against a DOSBox DRO capture (whose delays are also in ms) by
+     * tools/regcmp.py. Derived from the frames actually rendered, so it tracks
+     * tempo changes exactly and never drifts from the audio. */
+    double t_ms = 0.0;
+
     while (!r.finished && frames < max_frames && !g_stop) {
+        if (tracef) fprintf(tracef, "; t %.2f\n", t_ms);
         replay_tick(&r, &dev);
 
         if (opt->status && (int)r.order_idx != last_order) {
@@ -215,6 +223,7 @@ static int render_wav(const char *songpath, const char *wavpath,
         }
         OPL3_GenerateStream(&chip, pcm + frames * 2, n);
         frames += n;
+        t_ms += 1000.0 * (double)n / (double)rate;
     }
 
     printf("rendered %zu frames (%.2f s), finished=%d\n",

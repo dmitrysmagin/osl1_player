@@ -261,8 +261,9 @@ int oldrld_load(Song *song, char *errbuf, size_t errlen)
     song->title[sizeof(song->title) - 1] = '\0';
     song->block_off = 0;
 
-    song->instr_count = OLD_INSTR_MAX;
-    song->instr_size  = OLD_INSTR_BLOCK_SIZE;
+    song->instr_count   = OLD_INSTR_MAX;
+    song->instr_size    = OLD_INSTR_BLOCK_SIZE;
+    song->instr_tab_off = 0;    /* old format has no pointer table */
     song->instr_total = OLD_INSTR_MAX;
     song->instr_valid = valid_count;
     song->fm_instr    = fm_count;

@@ -36,6 +36,11 @@ except (AttributeError, ValueError):
 
 SYNTH_NAMES = {0x02: "FM-short", 0x04: "FM-ext", 0x08: "MIDI"}
 
+# Instrument pointer table: `instr_count` file-absolute u32 record offsets
+# starting here, immediately followed by the records. Must match osl1.h.
+INSTR_TAB_OFF = 0x4E
+INSTR_SPAN = 0x3E       # bytes of a record we actually read (up to adl[15])
+
 
 def u16(d, o):
     return d[o] | (d[o + 1] << 8) if o + 2 <= len(d) else 0
@@ -70,25 +75,33 @@ def parse(d):
         "title": rd_str(d, 0x28, 30),
         "block_off": u32(d, 0x48),
         "instr_count": u16(d, 0x4C),
-        "instr_size": u16(d, 0x4E),
+        "instr_tab_off": INSTR_TAB_OFF,
         "instr": [],
     }
 
-    # ---- instrument pointer table @0x50 (u32 entries; offset is the high word)
+    # ---- instrument pointer table @0x4E: `instr_count` file-absolute u32
+    # record offsets, immediately followed by the records themselves. Verified
+    # exactly (instr[0].offset == 0x4E + 4*instr_count) on 304 of 322 corpus
+    # files; the other 18 have a NULL entry 0, i.e. an unused slot 0.
+    #
+    # This previously read the table from 0x50 with the offset at entry+2 (so
+    # effectively 0x52) - one entry late, which dropped instrument 0 of every
+    # song and made the last entry read garbage. See osl1.c for the full note.
     total = min(song["instr_count"], 256)
+    tab_end = INSTR_TAB_OFF + 4 * song["instr_count"]
     last = None
     fm_cnt = midi_cnt = valid = 0
     synth_hist = {}
     for i in range(total):
-        te = 0x50 + i * 4
+        te = INSTR_TAB_OFF + i * 4
         if te + 4 > sz:
             total = i
             break
-        w1 = u16(d, te + 2)                      # file-absolute record offset
+        w1 = u32(d, te)                          # file-absolute record offset
         ins = Instr()
         ins.idx = i
         ins.offset = w1
-        ok = (w1 > 0x4F) and (w1 + song["instr_size"] <= sz)
+        ok = (w1 >= tab_end) and (w1 + INSTR_SPAN <= sz)
         if ok and last is not None and w1 <= last:
             ok = False
         ins.valid = ok

@@ -301,17 +301,21 @@ static void trigger_row(Replay *r, opl_dev *dev)
         const uint8_t *adl = NULL;
 
         /* Step 1 (@0x101a): instrument select + initial volume, only when a
-         * selector AND at least one note are present. b[5] selects the patch
-         * (file index = b[5]-2; verified against title.dro). A 0x0C riding with
-         * the note sets the level (else full), and is consumed here. */
+         * selector AND at least one note are present. b[5] selects the patch,
+         * 1-based: file index = b[5]-1, so selector 1 is instrument 0. A 0x0C
+         * riding with the note sets the level (else full), consumed here.
+         *
+         * This was `b[5]-2` while osl1.c read the instrument pointer table one
+         * entry late; the two off-by-ones cancelled for selectors >= 2, so the
+         * only casualty was selector 1 (instrument 0), which resolved to index
+         * -1 and was skipped entirely - no patch, no transpose. Caught by the
+         * od1.dro register diff, where OD1.ALB track 0 ("Dean Bdrum", selector
+         * 1, transpose -24) played two octaves high with the wrong timbre. */
         if (b[5] != 0 && any_note) {
-            if (b[5] >= 2) {
-                int idx = b[5] - 2;
-                if (idx >= 0 && idx < r->song->instr_total &&
-                    r->song->instr[idx].valid) {
-                    adl = r->song->instr[idx].adl;
-                    vc->transpose = r->song->instr[idx].transpose;
-                }
+            int idx = b[5] - 1;                  /* b[5] != 0, so idx >= 0 */
+            if (idx < r->song->instr_total && r->song->instr[idx].valid) {
+                adl = r->song->instr[idx].adl;
+                vc->transpose = r->song->instr[idx].transpose;
             }
             uint8_t vol = 0x7F;
             if (cmd == 0x0C) { vol = b[7]; b[6] = 0; b[7] = 0; cmd = 0; }

@@ -67,6 +67,15 @@ typedef enum {
     OSL1_KIND_MIDI          /* only MIDI/program instruments (no FM) -> mute  */
 } Osl1Kind;
 
+/* File offset of the instrument pointer table: `instr_count` file-absolute
+ * u32 record offsets, immediately followed by the records themselves. */
+#define OSL1_INSTR_TAB_OFF  0x4E
+
+/* Bytes of an instrument record medplay actually reads (up to adl[15] at
+ * +0x3D). Used as the bounds check for a table entry; records are spaced
+ * 0x3E apart in the corpus and carry their own length at +0x00. */
+#define OSL1_INSTR_SPAN     0x3E
+
 typedef struct {
     int      valid;         /* passed the table-consistency checks   */
     uint32_t offset;        /* file-absolute offset of this instrument */
@@ -111,7 +120,19 @@ typedef struct {
     char         title[31];     /* +0x28 30-byte null-padded title    */
     uint32_t     block_off;     /* +0x48 pattern block offset         */
     uint16_t     instr_count;   /* +0x4C instrument count (table len) */
-    uint16_t     instr_size;    /* +0x4E instrument data size         */
+    /* Offset of the instrument pointer table. For OSL1 this is always 0x4E:
+     * the table is `instr_count` file-absolute u32 record offsets starting
+     * there, immediately followed by the records themselves (verified on
+     * 304/322 corpus files: instr[0].offset == 0x4E + 4*instr_count exactly;
+     * the remaining 18 have a NULL entry 0, i.e. an unused slot 0).
+     *
+     * This field used to be read as an "instr_size" from 0x4E, which is in
+     * fact the low half of table entry 0. That made the whole table read one
+     * entry late and silently discarded instrument 0 of every song - see the
+     * note in osl1.c. Kept as a struct field because oldrld.c reports a real
+     * fixed record size for the old format. */
+    uint16_t     instr_tab_off; /* OSL1: 0x4E. Old-format .RLD: 0.    */
+    uint16_t     instr_size;    /* record span used for bounds checks */
 
     uint16_t     instr_total;   /* number of table entries parsed     */
     uint16_t     instr_valid;   /* number that passed validation      */

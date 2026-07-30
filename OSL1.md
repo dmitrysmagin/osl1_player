@@ -89,7 +89,7 @@ offset fields and may appear in any order in the file body.
 | +0x28  | char[30]  | title         | Song title, NUL-padded.                                      |
 | +0x48  | u32       | block_off     | File-absolute offset of the pattern block (§8).             |
 | +0x4C  | u16       | instr_count   | Number of entries in the instrument pointer table.          |
-| +0x4E  | u16       | instr_size    | Nominal instrument-data size used for pointer validation.   |
+| +0x4E  | u32[]     | instr_table   | Start of the instrument pointer table itself (§5).          |
 
 ### The generation byte `+0x07`
 
@@ -107,30 +107,49 @@ different record layout — treat those as out-of-spec for the song format.)
 
 ---
 
-## 5. Instrument pointer table (`+0x50`)
+## 5. Instrument pointer table (`+0x4E`)
 
-`instr_count` entries, **4 bytes each**, starting at file offset `0x50`.
+`instr_count` entries, **4 bytes each** (a file-absolute u32 record offset),
+starting at file offset `0x4E`. The instrument records follow **immediately**
+after the table, so:
 
-| Entry offset | Type | Field           | Notes                                            |
-|--------------|------|-----------------|--------------------------------------------------|
-| +0x00        | u16  | (segment slot)  | Zero on disk; the driver fills a segment here at load. |
-| +0x02        | u16  | record_offset   | File-absolute offset of the instrument record.   |
+```
+instr[0].record_offset == 0x4E + 4 * instr_count
+```
 
-The driver resolves an instrument as a **far pointer** loaded from
-`entry+0x02` (`les di, es:[bx*4 + table + 2]`), i.e. only the offset half is
-meaningful on disk.
+This invariant holds exactly on 304 of the 322 OSL1 files in the corpus. In the
+other 18, entry 0 is `0x00000000` — an unused instrument slot 0 — and the
+records begin at the same computed address anyway.
+
+Instrument selectors in pattern cells are **1-based**: cell selector `n`
+resolves to table index `n - 1`, and `0` means "no instrument change".
+
+> **Correction (was wrong until the `od1.dro` register diff).** This table was
+> previously documented and parsed as starting at `0x50` with the offset in the
+> *high* half of each entry (i.e. effectively reading offsets from `0x52`), with
+> `0x4E` mistaken for an `instr_size` field. That is one entry too late: it
+> silently dropped **instrument 0 of every song** (+300 instruments across the
+> 326-file corpus once fixed) and made the final table entry read garbage out of
+> the first record's length field. Because the replay engine compensated with a
+> `selector - 2` mapping, the two off-by-ones cancelled for selectors `>= 2` and
+> only selector 1 misbehaved — which is why it survived earlier parity checks.
+> It was caught by diffing medplay's OPL register trace against a DOSBox capture
+> of MED.EXE playing `OD1.ALB`: track 0 selects instrument 0 ("Dean Bdrum",
+> transpose −24) and medplay was dropping both the patch and the transpose,
+> playing that bass-drum line two octaves high with the wrong timbre.
+> See `tools/regcmp.py`.
 
 ### Pointer validation (parser policy)
 
 An entry is treated as a valid instrument when:
 
-1. `record_offset > 0x4F` (clears the header), **and**
-2. `record_offset + instr_size <= file_size` (record fits), **and**
+1. `record_offset >= 0x4E + 4 * instr_count` (clears the table itself, and so
+   also rejects a NULL/unused entry), **and**
+2. `record_offset + 0x3E <= file_size` (the bytes we read fit), **and**
 3. `record_offset` is strictly greater than the previous valid entry's offset
    (monotonically increasing).
 
-Entries failing these tests are placeholders/padding and are skipped. This
-mirrors the reference dumper and cleanly rejects the stray non-song files.
+Entries failing these tests are placeholders/padding and are skipped.
 
 ---
 
@@ -408,8 +427,10 @@ either editor metadata or unused by the Adlib replay path.
 0x00 char[4] "OSL1"     0x28 char[30] title
 0x04 u8  version        0x48 u32 block_off
 0x05 u16 constant       0x4C u16 instr_count
-0x07 u8  generation     0x4E u16 instr_size
-0x50 instrument pointer table (4 bytes/entry; offset @entry+2)
+0x07 u8  generation
+0x4E instrument pointer table: instr_count x u32 record offsets,
+     records follow immediately at 0x4E + 4*instr_count.
+     Pattern-cell selectors are 1-based: selector n -> table index n-1.
 ```
 
 **Instrument record (FM)**
