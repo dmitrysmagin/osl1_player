@@ -95,6 +95,21 @@ typedef struct {
                              * finetune has no runtime effect. Parsed for
                              * completeness/display only; 0 across the corpus. */
     int      fm;            /* has a usable OPL2 FM patch at +0x2E    */
+
+    /* ---- old-format .RLD only (see oldrld.c); 0 for OSL1 files ---------- */
+    uint8_t  def_volume;    /* default level 0..0x7F from the slot table's
+                             * volume byte, doubled from its stored 0..0x3F.
+                             * Both era drivers apply this at note-on:
+                             * ADLIB.DRV @0x0508 (shl al,1, clamp 0x7F) and
+                             * MED.EXE's B6 loader (RE-REPORT 11.4 step 3).
+                             * A riding 0Ch overrides it for that note. */
+    uint8_t  rhythm;        /* B4 editor record +0x26: 0 = melodic, 6 = bass
+                             * drum, 7 = snare, 8 = tom, 9 = top cymbal,
+                             * 10 = hi-hat. ADLIB.DRV runs the OPL2 in rhythm
+                             * mode permanently (6 melodic + 5 percussion);
+                             * medplay's opl_dev is melodic-only, so this is
+                             * parsed and reported but not yet voiced as a
+                             * percussion slot - see OLD_RLD.md section 10. */
 } Instrument;
 
 typedef struct {
@@ -114,6 +129,14 @@ typedef struct {
 } PatternBlock;
 
 typedef struct {
+    /* Old-format .RLD generation byte: 0xB4 (1991) or 0xB6 (1991-93), or 0
+     * for a real OSL1 container. Chronological, not device-specific. */
+    uint8_t      old_magic;
+    /* Which instrument source actually supplied the patches (OldrldFmSource,
+     * resolved from AUTO). Meaningful only when old_magic != 0. */
+    uint8_t      old_fm_source;
+    uint16_t     old_rhythm_instr;  /* old-format instruments with rhythm != 0 */
+
     uint8_t      gen;           /* +0x07 format-generation (see OSL1_GEN_*) */
     uint8_t      version;       /* +0x04 */
     uint16_t     constant;      /* +0x05 */

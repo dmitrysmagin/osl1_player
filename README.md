@@ -1,9 +1,14 @@
 # medplay — OSL1/Adlib player in C + SDL2 + Nuked-OPL3
 
 `medplay.exe` is a standalone Windows console tool that plays Ocean OSL1 songs
-(`.ALB` / `.ADL` / `.LAP` / `.SCC`) through a clean-room re-implementation of the
-DOS `TRACKER.DRV` replay engine and `ADLIB.DEV` sound backend, synthesised by
-Nuked-OPL3 and output via SDL2.
+(`.ALB` / `.ADL` / `.LAP` / `.SCC`) **and the pre-OSL1 "old" `.RLD` format in
+both its generations** (`B4 9A 01`, 1991 and `B6 9A 01`, 1991–93) through a
+clean-room re-implementation of the DOS `TRACKER.DRV` replay engine and
+`ADLIB.DEV` sound backend, synthesised by Nuked-OPL3 and output via SDL2.
+
+Old-format songs are converted to the OSL1 in-memory shape at load time, so a
+single unmodified replay engine drives both. See **`OLD_RLD.md`** for the
+byte-level specification of that format and **`OSL1.md`** for the newer one.
 
 > **Status:** the Adlib path is implemented and validated. Both former unknowns
 > — the compressed row decoder and the Adlib note/instrument model — are fully
@@ -41,22 +46,37 @@ options:
   --opl2 / --opl3  force OPL2 (9 voices) or OPL3 (18); default: auto
   --speed <n>      initial ticks/row (default 6)
   --status         print a progress/status line
+  --fm-source <s>  old .RLD instrument source: auto (default) | block | editor
 ```
 
 The deterministic `--wav` render plus `--trace` are the primary regression tools:
 they let the OPL output be diffed byte-for-byte against a reference capture.
 
+### `--fm-source`
+
+Old `.RLD` files can describe each instrument twice — as a 256-byte OPL2
+register block, and as a 64-byte Adlib-editor record in a bank at end of file.
+`auto` picks whichever that generation's own DOS loader used (editor for `B4`,
+block for `B6`) and falls back to the block wherever the bank is absent or
+blank, which covers 90 of the 189 `B4` files. Force one or the other to compare.
+The flag has no effect on OSL1 songs. `OLD_RLD.md` §7.5 has the detail.
+
 ---
 
 ## 1. Objective & scope
 
-**In scope:** OSL1 parsing, the 50 Hz tick engine, the Adlib (OPL2/OPL3)
-note/effect path, the Nuked-OPL3 backend, SDL2 audio + timing, a CLI, and an
-offline `--wav` render for testing.
+**In scope:** OSL1 and old `.RLD` parsing, the 50 Hz tick engine, the Adlib
+(OPL2/OPL3) note/effect path, the Nuked-OPL3 backend, SDL2 audio + timing, a
+CLI, and an offline `--wav` render for testing.
 
 **Out of scope (for now):** Roland MT-32 and Sound Blaster SCC1 backends;
 GUI/editor; file writing. The replay engine is device-independent, so those are
 future backends on the same core.
+
+**Known gap:** the 1991 `ADLIB.DRV` ran the OPL2 in permanent percussion mode
+(6 melodic + 5 rhythm voices). `opl_dev.c` is melodic-only, so `B4` percussion
+instruments are parsed and reported but voiced as ordinary melodic notes — 72 of
+the 189 `B4` files are affected. See `OLD_RLD.md` §10.
 
 ## 2. How it maps onto the DOS stack
 

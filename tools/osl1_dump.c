@@ -20,6 +20,18 @@ static void dump(const char *path)
     printf("========================================================================\n\n");
 
     printf("  Header:\n");
+    if (s.old_magic) {
+        static const char *SRC[] = { "auto", "block (256-byte)", "editor (64-byte Adlib bank)" };
+        printf("    format        old .RLD, generation 0x%02X (%s)\n",
+               s.old_magic,
+               s.old_magic == 0xB4 ? "1991, 32 instrument slots"
+                                   : "1991-93, 64 instrument slots");
+        printf("    fm source     %s\n",
+               SRC[s.old_fm_source < 3 ? s.old_fm_source : 0]);
+        if (s.old_rhythm_instr)
+            printf("    rhythm instr  %u (OPL2 percussion; not voiced - see OLD_RLD.md 10)\n",
+                   s.old_rhythm_instr);
+    }
     printf("    version       %u\n", s.version);
     printf("    constant      0x%04X\n", s.constant);
     printf("    gen (@0x07)   0x%02X (%s)\n", s.gen, osl1_gen_name(s.gen));
@@ -37,14 +49,16 @@ static void dump(const char *path)
                s.instr_count, s.instr_size);
 
     printf("  Instruments (%u table entries):\n", s.instr_total);
-    printf("    #   off     len   syn  kind prog name                  adl[0..15]\n");
+    printf("    #   off     len   syn  kind prog vol rhy name                  adl[0..15]\n");
     for (uint16_t i = 0; i < s.instr_total; i++) {
         const Instrument *in = &s.instr[i];
-        printf("   %s%2u  0x%04X  %5u  0x%02X %-4s %3u  %-20s ",
+        printf("   %s%2u  0x%04X  %5u  0x%02X %-4s %3u %3u %3u %-20s ",
                in->valid ? " " : "*", i, in->offset, in->len,
                in->valid ? in->synth : 0,
                in->valid ? (in->fm ? "FM" : "MIDI") : "-",
-               in->valid ? in->program : 0, in->name);
+               in->valid ? in->program : 0,
+               in->valid ? in->def_volume : 0,
+               in->valid ? in->rhythm : 0, in->name);
         if (in->valid) {
             for (int b = 0; b < 16; b++) printf("%02x", in->adl[b]);
         }

@@ -317,7 +317,17 @@ static void trigger_row(Replay *r, opl_dev *dev)
                 adl = r->song->instr[idx].adl;
                 vc->transpose = r->song->instr[idx].transpose;
             }
+            /* Default level. OSL1 instruments carry none, so full (0x7F).
+             * Old-format .RLD instruments do: the slot table's volume byte,
+             * which both era loaders apply at note-on (ADLIB.DRV @0x0508 and
+             * MED.EXE's B6 path, RE-REPORT 11.4 step 3). Until this was
+             * parsed every old-format instrument played at full level. A
+             * riding 0Ch still overrides it, as the driver's inline handler
+             * @0x051F does. */
             uint8_t vol = 0x7F;
+            if (idx < r->song->instr_total && r->song->instr[idx].valid &&
+                r->song->instr[idx].def_volume)
+                vol = r->song->instr[idx].def_volume;
             if (cmd == 0x0C) { vol = b[7]; b[6] = 0; b[7] = 0; cmd = 0; }
             b[12] = vol;
             send_volume(r, dev, v);

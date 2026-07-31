@@ -21,6 +21,7 @@
 #include "opl3.h"
 #include "opl_dev.h"
 #include "osl1.h"
+#include "oldrld.h"
 #include "replay.h"
 
 /* Set by the SIGINT (Ctrl-C) handler; polled by the playback/render loops so
@@ -459,7 +460,11 @@ static void usage(void)
         "  --rate <hz>      output sample rate (default 48000; Nuked resamples)\n"
         "  --opl2 / --opl3  force OPL2 (9 voices) or OPL3 (18); default: auto\n"
         "  --speed <n>      initial ticks/row (default: read from the song)\n"
-        "  --status         print a progress/status line\n");
+        "  --status         print a progress/status line\n"
+        "  --fm-source <s>  old-format .RLD patch source: auto (default),\n"
+        "                   block (256-byte instrument blocks) or editor\n"
+        "                   (64-byte Adlib editor bank). auto = what the\n"
+        "                   era's own driver read: editor for B4, block for B6\n");
 }
 
 int main(int argc, char **argv)
@@ -485,6 +490,13 @@ int main(int argc, char **argv)
         else if (!strcmp(a, "--opl3"))                  opt.opl3  = 1;
         else if (!strcmp(a, "--status"))                opt.status = 1;
         else if (!strcmp(a, "--scale"))                 scale_mode = 1;
+        else if (!strcmp(a, "--fm-source") && i + 1 < argc) {
+            const char *s = argv[++i];
+            if      (!strcmp(s, "auto"))   oldrld_set_fm_source(OLDRLD_FM_AUTO);
+            else if (!strcmp(s, "block"))  oldrld_set_fm_source(OLDRLD_FM_BLOCK);
+            else if (!strcmp(s, "editor")) oldrld_set_fm_source(OLDRLD_FM_EDITOR);
+            else { fprintf(stderr, "--fm-source: expected auto|block|editor\n"); return 2; }
+        }
         else if (a[0] == '-') { fprintf(stderr, "unknown option: %s\n", a); usage(); return 2; }
         else if (!input)                                input = a;
         else { fprintf(stderr, "unexpected argument: %s\n", a); return 2; }
