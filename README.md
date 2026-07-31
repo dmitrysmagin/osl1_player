@@ -1,10 +1,15 @@
 # medplay — OSL1/Adlib player in C + SDL2 + Nuked-OPL3
 
 `medplay.exe` is a standalone Windows console tool that plays Ocean OSL1 songs
-(`.ALB` / `.ADL` / `.LAP` / `.SCC`) **and the pre-OSL1 "old" `.RLD` format in
-both its generations** (`B4 9A 01`, 1991 and `B6 9A 01`, 1991–93) through a
+(`.ALB` / `.ADL` / `.LAP` / `.SCC`) **and all three pre-OSL1 "old" generations** —
+`B4 9A 01` (1991) and `B6 9A 01` (1991–93), both usually `.RLD`, plus the
+`20 AD 01` runtime export that always carries `.ALB` (1992) — through a
 clean-room re-implementation of the DOS `TRACKER.DRV` replay engine and
 `ADLIB.DEV` sound backend, synthesised by Nuked-OPL3 and output via SDL2.
+
+> Note that `.ALB` is ambiguous: most `.ALB` files are ordinary OSL1 Adlib
+> containers, but 14 of them are the old-format variant above. `medplay`
+> dispatches on the magic bytes, never the extension.
 
 Old-format songs are converted to the OSL1 in-memory shape at load time, so a
 single unmodified replay engine drives both. See **`OLD_RLD.md`** for the
@@ -59,7 +64,9 @@ register block, and as a 64-byte Adlib-editor record in a bank at end of file.
 `auto` picks whichever that generation's own DOS loader used (editor for `B4`,
 block for `B6`) and falls back to the block wherever the bank is absent or
 blank, which covers 90 of the 189 `B4` files. Force one or the other to compare.
-The flag has no effect on OSL1 songs. `OLD_RLD.md` §7.5 has the detail.
+The flag has no effect on OSL1 songs, nor on old-format `.ALB` files, which
+carry only the editor records and so have nothing to choose between.
+`OLD_RLD.md` §7.5 has the detail.
 
 ---
 
@@ -76,7 +83,10 @@ future backends on the same core.
 **Known gap:** the 1991 `ADLIB.DRV` ran the OPL2 in permanent percussion mode
 (6 melodic + 5 rhythm voices). `opl_dev.c` is melodic-only, so `B4` percussion
 instruments are parsed and reported but voiced as ordinary melodic notes — 72 of
-the 189 `B4` files are affected. See `OLD_RLD.md` §10.
+the 189 `B4` files are affected. See `OLD_RLD.md` §10. The same gap applies to
+the old-format `.ALB` files, whose rows reserve five explicit percussion slots
+(`OLD_RLD.md` §11.4); those are voiced melodically too, which is exact for the
+bass drum and approximate for the other four.
 
 ## 2. How it maps onto the DOS stack
 
@@ -96,7 +106,9 @@ Only `opl_dev.c` is Adlib-specific; the engine is shared by any future backend.
 ## 3. Architecture
 
 ```
-file.adl ─► osl1.c ──► Song{ instr[], order[], pos_ptr[], raw[] }
+file.adl ─► osl1.c ──┐
+                     ├─► Song{ instr[], order[], pos_ptr[], raw[] }
+file.rld ─► oldrld.c ┘   (B4/B6/.ALB are expanded into the OSL1 shape here)
                          │
                          ▼
             replay.c  replay_tick() @ 50 Hz
@@ -153,6 +165,35 @@ p2, `+0x0A` 20-byte name, `+0x1E` a non-Adlib device sub-record, **`+0x2E` the
 16-byte Adlib patch**. Reading the patch from `+0x1E` (the earlier guess) loads
 the wrong bytes — the real Adlib operator data is at `+0x2E`, confirmed
 byte-for-byte against the DRO capture.
+
+### `oldrld.c` — pre-OSL1 loader (`B4`, `B6`, `.ALB`)
+
+Detects `B4 9A 01` / `B6 9A 01` / `20 AD 01`, reads the header, locates every
+pattern through the paragraph table (`para_table_off + para[i] × 16`, uniform
+across all three generations), expands the cell stream into the uncompressed
+shape `replay.c` already understands, and synthesises the `PatternBlock` fields
+the old format never stored (tempo 50, speed 6, 64 rows).
+
+There are two cell decoders, because `.ALB` does not share the older encoding:
+
+* `decode_old_pattern()` — `B4`/`B6`: a `u16` code word, 2 bits per track, with
+  variable 0/2/2/7-byte payloads. Bit-for-bit identical to OSL1's compressed
+  position stream.
+* `decode_alb_pattern()` — `.ALB`: a `u16` presence mask, one bit per slot, with
+  a fixed 4-byte cell per set bit. Rows carry `track_count + 5` slots, the last
+  five being the OPL2 percussion channels (`OLD_RLD.md` §11.3–11.4).
+
+Instruments come from either the 256-byte register blocks or the end-of-file
+Adlib editor bank, selected by `--fm-source` (§7.5 of `OLD_RLD.md`); `.ALB` has
+only the editor records and forces that path. The editor path inverts the LEVEL
+and SUSTAIN fields on the way to the OPL2's attenuation convention, exactly as
+`ADLIB.DRV` did.
+
+Validated across all 514 old-format files in the corpus: every one loads without
+error. Adding `.ALB` left the older paths untouched — `decode_dump` and
+`osl1_dump` output is byte-identical to the previous build on all 190 `B4` and
+all 314 `B6` files in `test/`, and all 25 `.ALB` paths render with healthy
+amplitude (peak 4087–25117, no silent file).
 
 ### `replay.c` — clean-room `TRACKER.DRV`
 - Per-voice runtime cell `RVoice.b[]` (written by `decode_cell` @0x1526):

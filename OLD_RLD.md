@@ -1,9 +1,9 @@
 # The Pre-OSL1 "Old" `.RLD` Format
 
 A clean-room description of the **older, pre-`OSL1`** music format written by
-Ocean Software's tracker. Files in this format carry the extension `.RLD` (a few
-carry none at all) and begin with a 3-byte magic `Bn 9A 01` instead of the ASCII
-`"OSL1"`.
+Ocean Software's tracker. Files in this format usually carry the extension
+`.RLD` (a few carry none at all, and one variant uses `.ALB`) and begin with a
+3-byte magic `Bn 9A 01` or `20 AD 01` instead of the ASCII `"OSL1"`.
 
 This document is the byte-level specification. It was reconstructed by
 reverse-engineering two separate loaders — `MED.EXE`'s alternate load path
@@ -11,42 +11,53 @@ reverse-engineering two separate loaders — `MED.EXE`'s alternate load path
 `MEDIT/LAPMUSIC/OLDMUSIC/BSSJS/ADLIB.DRV` (fully annotated in
 `../BSSJS_ADLIB.DRV.annotated.asm`) — cross-checked against the 500 old-format
 files in the corpus and, crucially for the instrument layout, against the
-326-file OSL1 corpus, which shares many of the same named instruments. Where a
-field's meaning is confirmed it is stated plainly; where it is inferred or
-unverified it is marked **(inferred)** or **(unverified)**.
+326-file OSL1 corpus, which shares many of the same named instruments. The
+`.ALB` variant of §11 has no surviving loader and was reversed from the files
+alone. Where a field's meaning is confirmed it is stated plainly; where it is
+inferred or unverified it is marked **(inferred)** or **(unverified)**.
 
 The reference implementation is `src/oldrld.c`. See `OSL1.md` for the newer
-container; the two share the pattern *cell* encoding but nothing else.
+container; `B4`/`B6` share the pattern *cell* encoding with it but nothing else,
+and `.ALB` shares not even that.
 
-## Two generations
+## Three generations
 
-The first magic byte is a **generation counter, not a device id**. Both
+The first magic byte is a **generation counter, not a device id**. All three
 generations hold OPL2 FM data; the `A/` versus `R/` folder convention seen
 throughout `OLDMUSIC/` is the orthogonal Adlib/Roland distinction. The evidence
 for that — Roland folders full of `B4` files, an Adlib tune that is `B6`, 19
 project folders holding both — is set out in `../RE-REPORT.md` §11.1b.
 
-| | `B4 9A 01` | `B6 9A 01` |
-|---|---|---|
-| Era | Jan–May 1991 | Aug 1991 – 1993 |
-| Files in corpus | 189 | 311 |
-| Instrument slots | 32 | 64 |
-| Cue table | absent | 128 × 16 bytes at `+0x158` |
-| Paragraph table | `+0x118` | `+0x958` |
-| Pattern stream | `+0x318` | `+0xB58` |
-| Adlib editor bank | always present; live in 99 | present in 138, live in 17 |
-| Loaded by | `BSSJS/ADLIB.DRV` (1991) | `MED.EXE` (1992–93) |
+| | `B4 9A 01` | `B6 9A 01` | `20 AD 01` (§11) |
+|---|---|---|---|
+| Era | Jan–May 1991 | Aug 1991 – 1993 | 1992 |
+| Extension | `.RLD` | `.RLD` | `.ALB` |
+| Files in corpus | 189 | 311 | 14 distinct |
+| Role | editor working file | editor working file | **runtime export** |
+| Instrument slots | 32 | 64 | 32 (only the first `n_instr` live) |
+| Cue table | absent | 128 × 16 bytes at `+0x158` | `n_cue` × 16 bytes at `+0x158` |
+| Paragraph table | `+0x118`, 256 fixed entries | `+0x958`, 256 fixed entries | `+0x158 + 16·n_cue`, `pat+1` entries |
+| Pattern stream | `+0x318` | `+0xB58` | first paragraph after the table |
+| Cell coding | 2 bits/track, 0/2/2/7 bytes | same | **1 bit/slot, fixed 4 bytes** |
+| 256-byte instrument blocks | yes | yes | **none** |
+| Adlib editor bank | always present; live in 99 | present in 138, live in 17 | always, `n_instr` records |
+| Loaded by | `BSSJS/ADLIB.DRV` (1991) | `MED.EXE` (1992–93) | no surviving loader |
 
-Everything else — the magic layout, the order table, the slot table, the
-paragraph addressing, the pattern encoding and the 256-byte instrument blocks —
-is **identical**. The `0x40` shift in every offset after the slot table falls
-straight out of 32 slots versus 64.
+`B4` and `B6` differ *only* in the slot count and the offsets that shift as a
+result — the magic layout, the order table, the slot table, the paragraph
+addressing, the pattern encoding and the 256-byte instrument blocks are
+**identical**, and the `0x40` shift in every offset after the slot table falls
+straight out of 32 slots versus 64. Sections 1–10 describe those two.
+
+`.ALB` reuses the header and the paragraph-addressing scheme but replaces the
+pattern encoding and drops the instrument blocks entirely. **Section 11 covers
+it in full**; the earlier sections apply to it only where §11 says so.
 
 `MED.EXE` accepts `B6` only: its magic test at `med.asm:0x2364` is a bare
-`cmpw $0x9ab6` with no fallback, so the `B3`/`B4`/`B5` files cannot be opened in
-the editor at all. `src/oldrld.c` reads `B4` and `B6` — all 500 files load
-cleanly — while `B3` (1 file) and `B5` (2 files) remain unhandled for want of
-specimens.
+`cmpw $0x9ab6` with no fallback, so the `B3`/`B4`/`B5` and `.ALB` files cannot
+be opened in the editor at all. `src/oldrld.c` reads `B4`, `B6` and `.ALB` — all
+514 files load cleanly — while `B3` (1 file) and `B5` (2 files) remain unhandled
+for want of specimens.
 
 > **`.RLD` is a filename convention, not a format marker.** 109 files carrying
 > the extension are ordinary OSL1 containers, and two are a plain text file.
@@ -86,6 +97,11 @@ what makes it practical to decompress old patterns at load time into the shape
 OSL1's uncompressed-position path already understands, and play both formats on
 one unmodified replay engine — which is exactly what `src/oldrld.c` does.
 
+`.ALB` (§11) does **not** share it. Its rows carry a presence *mask* and fixed
+4-byte cells rather than a 2-bit code word and variable payloads, so it needs its
+own decoder — but the decoder still writes into the same 8-byte cell shape, so
+the replay engine remains untouched for it too.
+
 ---
 
 ## 3. Top-level layout
@@ -109,6 +125,9 @@ Everything up to the pattern stream is at a fixed offset — this format has no
 relocatable sections at all. Only the boundary between the pattern stream and
 the instrument blocks is data-dependent, and the paragraph table states it
 explicitly (§6.1).
+
+`.ALB` breaks that property: both its cue table and its paragraph table are
+sized from header counts, so everything from `+0x158` onward moves. See §11.2.
 
 ---
 
@@ -150,7 +169,7 @@ Two-byte entries, one per instrument slot — 64 entries in B6 (ending at
 | Offset | Type | Field   | Notes                                                       |
 |--------|------|---------|-------------------------------------------------------------|
 | +0x00  | u8   | present | 1 = this slot has an instrument block; 0 = unused. Only ever 0 or 1 (4820 present across the B6 corpus, 15084 unused). |
-| +0x01  | u8   | volume  | Slot default volume, `0`–`0x3F`. Maximum in 2579 of the 4820 present B6 slots. |
+| +0x01  | u8   | volume  | Slot default volume, `0`–`0x40` (0–64 decimal). Maximum in 2579 of the 4820 present B6 slots, and likewise the commonest value in B4 and `.ALB`. |
 
 **This table determines the file's layout**, because §7's instrument blocks are
 written only for slots with `present == 1`, in slot order. A slot's index is
@@ -166,6 +185,10 @@ range and clamp at `0x7F`.
 ```
 def_volume = min(slot_volume * 2, 0x7F)
 ```
+
+The stored scale is **0–64**, not 0–63: `0x40` is the observed maximum in all
+three generations and it is a common value, not an outlier. The doubling
+therefore reaches `0x80`, which is exactly why the clamp to `0x7F` exists.
 
 In `ADLIB.DRV` this is the `shl al,1` at `BSSJS_ADLIB.DRV.annotated.asm:~742`,
 immediately before the same code path that an inline `0Ch` effect would take.
@@ -209,6 +232,9 @@ cues would start here.
 
 Entry 127 is a fixed sentinel across all 309 B6 files — name `"Not Used"` with
 `start_pos`/`end_pos` reading as the u16 `0x8000`.
+
+`.ALB` carries the same 16-byte entry layout but a **variable** number of them,
+and its positions are **0-based** where B6's appear to be 1-based. See §11.2.
 
 ---
 
@@ -258,6 +284,10 @@ makes the instrument blocks locatable without decompressing anything.
 > Validated corpus-wide: for all 500 files, `filesize − (blocks_off +
 > 256 × present_count)` is exactly 0 or exactly 2048 — never anything else. The
 > 2048 is §7.4's Adlib editor bank.
+>
+> **`.ALB` has no stale entries.** Its table holds exactly `pattern_count + 1`
+> entries, padded to a paragraph and nothing more — verified on all 14 files
+> (§11.2). The warning above applies to `B4`/`B6` only.
 
 ### 6.2 Pattern stream encoding
 
@@ -626,13 +656,279 @@ gap in B4 playback fidelity.
 
 ---
 
+## 11. The `.ALB` variant (`20 AD 01`)
+
+A third old-format generation, distinguished by the magic `20 AD 01` and always
+carrying the extension `.ALB`. Fourteen distinct songs survive, across four 1992
+projects — `LETHAL3`, `CHAOS`, `CRUSADE` and `UTOPIA`.
+
+It is **not an editor working file**. Every structure that exists purely to
+serve the editor is either dropped or trimmed to fit:
+
+* the 256-byte instrument blocks are **gone entirely** — only the compact
+  64-byte Adlib editor records survive, and there are exactly as many of them as
+  the song uses;
+* the cue table is cut from a fixed 128 entries to however many the song has;
+* the paragraph table is cut from a fixed 256 entries to `pattern_count + 1`;
+* the pattern encoding is replaced with one that is simpler to decode and
+  slightly larger on disc.
+
+Taken together that reads as a **runtime export**: a "save for the game" pass
+that discards editor state, keeps only what a player needs, and trades a little
+size for a decoder with no variable-length payloads in it. There is no surviving
+loader for it in the corpus — see §11.6.
+
+`src/oldrld.c` reads it; `oldrld_generation()` returns `OLDRLD_GEN_ALB` (`0x20`,
+the literal first byte, for the same reason `0xB4`/`0xB6` are used).
+
+### 11.1 Provenance and the corpus
+
+| Project | Files |
+|---|---|
+| `LAPMUSIC/LETHAL3` | `ING4`, `PCGO`, `PCMOD` |
+| `LAPMUSIC/OLDMUSIC/CHAOS` | `ADLIB2` |
+| `LAPMUSIC/OLDMUSIC/CRUSADE` | `CRUSFX`, `DEATH`, `ING`, `MEDAL`, `TITLE` |
+| `LAPMUSIC/OLDMUSIC/UTOPIA` | `ING1`, `ING2`, `ING3`, `TITLE`, `UTOFX` |
+
+Twenty paths under `MEDIT/` and 25 under `medplay/test/`, but only **14 distinct
+files by content** — `OLDMUSIC/` contains a nested copy of itself and
+`medplay/test/` is a working duplicate. All counts below are over the 14.
+
+Three of the titles at `+0x03` name a **`.MOD` source file** — `pcing4.mod`,
+`pcgo.mod`, `pcmod.mod` — which places the variant alongside the Amiga ports and
+is further evidence that these are exported deliverables rather than
+compositions in progress.
+
+### 11.2 Header and container
+
+Identical to `B4` up to `+0x118`, then it diverges. The instrument slot table is
+**32 entries** as in `B4`, so it ends at `+0xD8`; but unlike `B4` the track count
+does *not* follow immediately — it sits at `+0x118`, at the `B6` offset, leaving
+`+0xD8`–`+0x117` as a permanently zero gap (0 of 14 files have a non-zero byte
+in it).
+
+| Offset | Type     | Field       | Notes                                                     |
+|--------|----------|-------------|-----------------------------------------------------------|
+| +0x000 | u8[3]    | magic       | `20 AD 01`.                                               |
+| +0x003 | char[20] | name        | Song name, NUL-padded. Empty in 6 of 14.                  |
+| +0x018 | u8[128]  | order       | As §4. Order length 2–55 observed.                        |
+| +0x098 | u8[32][2]| instr_slots | As §4, 32 slots. **Only the first `n_instr` entries are meaningful** — see below. |
+| +0x0D8 | —        | —           | Zero in every file, to `+0x117`.                          |
+| +0x118 | u8       | track_count | 4, 5 or 6 observed. Excludes the percussion slots (§11.4). |
+| +0x119 | u8       | restart_idx | As §4.                                                    |
+| +0x11A | u8       | n_instr     | Number of 64-byte editor records at end of file. 2–24 observed. |
+| +0x11B | u8       | n_cue       | Entries in the cue table, **including its `"Not Used"` sentinel**. 1, 2, 11 or 25 observed. |
+| +0x11C | —        | —           | Zero in every file, to `+0x157`.                          |
+| +0x158 | ×`n_cue` | cue_table   | 16 bytes each, layout exactly as §5.                      |
+
+Then, in order:
+
+```
+para = 0x158 + 16 * n_cue          paragraph table, pattern_count + 1 u16s
+                                     padded up to a 16-byte boundary
+pattern i at para + 16 * table[i]  patterns (§11.3)
+para + 16 * table[pattern_count]   n_instr x 64-byte editor records, to EOF
+```
+
+Three properties were checked on all 14 files and hold exactly:
+
+* `table[0] == ceil((pattern_count + 1) * 2 / 16)` — i.e. the pattern stream
+  starts at the first paragraph boundary past the end of the table itself, with
+  no fixed 256-entry reservation and therefore **no stale tail** (§6.1);
+* every pattern decodes to precisely the byte range the table delimits;
+* `filesize − (records_off + 64 × n_instr) == 0` — **zero slack**, so `n_instr`
+  is corroborated independently by the file size.
+
+#### The cue table is 0-based here
+
+Same 16-byte entry layout as §5, but `start_pos`/`end_pos` are **0-based** and
+the last entry is always the `"Not Used"` sentinel, so the live cue count is
+`n_cue − 1`. Twelve of the 14 files have exactly one live cue spanning the whole
+song (`start_pos == 0`, `end_pos == order_length − 1`) — the song's own name.
+The two exceptions are the sound-effect banks, one cue per order position:
+
+* `CRUSADE/CRUSFX.ALB` — 24 cues over 25 patterns: `ARMOUR`, `THUD`, `PSYCHIK`,
+  `FUZZ`, `ALARM`, `BUTTON`, `FOOTSTEP`, `DOOR`, `PICKUP`, `GRENADE`,
+  `EXPLOSION`, `CHAOS`, `LAZER`, `MISSILE`, `SCANNER`, `BLIP`, `RICOCHET`,
+  `FIRE`, `COMMANDER` …
+* `UTOPIA/UTOFX.ALB` — 10 cues, `LANDEXP`, `MISSILE` …
+
+That is the same role the B6 cue table plays in `PMONGER/COCKFX.RLD` (§5), which
+is a useful cross-check that the field means what §5 says it means.
+
+#### The slot table is stale past `n_instr`
+
+`present_count` and `n_instr` disagree in 11 of the 14 files, and in both
+directions — `UTOPIA/TITLE.ALB` declares 4 records while leaving `present = 1`
+in all 32 slots, and `UTOPIA/ING3.ALB` declares 24 records with only 11 slots
+flagged present. The export evidently rewrites the counts without clearing the
+table it inherited.
+
+The rule that works: **take `n_instr` as the record count, and read the presence
+flag and default volume only for slots below it.** Within that range the flag is
+reliable — across all 14 files, no pattern cell ever selects a slot whose
+presence flag is 0.
+
+Do **not** substitute "has a blank name" for the presence flag, tempting as it
+is by analogy with §7.4's blank-bank test. Three files (`LETHAL3/ING4.ALB` slots
+6 and 9, `CRUSADE/ING.ALB` slot 2) actively play instruments whose name field is
+empty — the composer simply never named them.
+
+### 11.3 Pattern encoding — a presence mask, not a code word
+
+Every pattern is 64 rows and paragraph-padded exactly as in §6.3. The row
+encoding is where `.ALB` parts company with everything else in this document:
+
+```
+u16 mask                ; one bit per channel slot, MSB first: bit 15 = slot 0
+<4-byte cell> x popcount(mask)   ; in ascending slot order
+```
+
+There are no variable payloads and no per-track code values. A row is always
+`2 + 4 × popcount(mask)` bytes, and a slot is either silent (bit clear, nothing
+stored) or carries a full cell.
+
+| Offset | Field      | Notes                                                    |
+|--------|------------|----------------------------------------------------------|
+| +0x00  | note       | 0 = no note; otherwise 17–96 observed. Same numbering as `B4`/`B6`. |
+| +0x01  | instrument | **1-based** selector, as everywhere else in the family; 0 = no change. |
+| +0x02  | effect_cmd | 0–15, the same MOD-like set as `B4`/`B6` — no remapping. |
+| +0x03  | effect_par | Effect parameter.                                        |
+
+These map onto the replay engine's 8-byte cell as `cell[0]`, `cell[4]`,
+`cell[5]`, `cell[6]` — the same four slots §6.2's code 2 and code 3 write, which
+is why the same replay engine plays both without modification.
+
+> **How the encoding was established.** Length validation alone cannot
+> distinguish this model from a 2-bit-per-track one, because under every
+> plausible pairing the row length comes out as `4 × popcount`. What settled it
+> was profiling the payload bytes: under the 2-bit reading, "code 3" payloads
+> showed the note and instrument fields *duplicated* in both halves — the
+> signature of two independent cells being read as one. One bit per slot, four
+> bytes per cell, is the reading under which every byte has exactly one meaning.
+>
+> Validated over all 14 files by `tools/alb_cells.py`: 29 019 cells decoded,
+> every pattern landing exactly on its stated table boundary, every note in
+> 17–96, every instrument selector within `n_instr`, and no cell entirely empty
+> (a set mask bit always carries something).
+
+Effect usage across the corpus is dominated by the same two commands as the
+older generations — `0x0C` set volume (8262 cells) and `0x0A` volume slide
+(1859) — with `0x0F` set speed (291) and a long tail of `0x01`–`0x0E`. 17 628
+cells carry effect 0, i.e. a bare note.
+
+### 11.4 The five percussion slots
+
+**A `.ALB` row has `track_count + 5` slots, not `track_count`.** The five extra
+are the OPL2 rhythm-mode percussion channels of §10, in the driver's own order:
+
+| Slot | Voice | Editor rhythm code (§7.4 `+0x26`) |
+|---|---|---|
+| `track_count + 0` | bass drum | 6 |
+| `track_count + 1` | snare drum | 7 |
+| `track_count + 2` | tom-tom | 8 |
+| `track_count + 3` | cymbal | 9 |
+| `track_count + 4` | hi-hat | 10 |
+
+Two independent lines of evidence, both corpus-wide:
+
+1. **No mask bit at or above `track_count + 5` is ever set.** Across all 14 files
+   the highest slot used is exactly `track_count + 5` in the busy songs (6+5=11
+   in `ING4`, `ADLIB2`, `ING`, `TITLE`, `ING3`; 4+5=9 in `CRUSFX`, `DEATH`;
+   5+5=10 in `UTOFX`) and below it in the sparse ones. Never above.
+2. **The instruments played in slot `track_count + k` carry rhythm code `6 + k`.**
+   Checking every instrument that appears in a percussion slot gives **32
+   agreements and 1 disagreement** — the exception being `CHAOS/ADLIB2.ALB`,
+   which plays `BDRUM1` (code 6) in the snare slot. The names line up with the
+   codes throughout: `BDRUM1` in the bass-drum slot, `SNARE1` in the snare slot,
+   `WHITENOISE` in the cymbal slot, `HIHAT1`/`HIHAT2` in the hi-hat slot.
+
+This is the cleanest confirmation in the whole corpus that §10's rhythm codes
+mean what they say — the `.ALB` export has baked the mapping into the row layout
+itself.
+
+#### Not emulated, but voiced
+
+`src/opl_dev.c` is melodic-only (§10), so `oldrld.c` reports the row width as
+`track_count + 5` and lets all eleven slots play as ordinary melodic voices.
+That is exact for the bass drum, which in OPL2 rhythm mode really is a normal
+two-operator voice, and approximate for the other four, which in hardware share
+operators and are keyed through `$BD` rather than `$B0`.
+
+Note the difference from `B4`, where a percussion instrument is parsed and then
+**not** voiced at all: here it *is* voiced, just melodically. `osl1_dump`'s
+`rhythm instr` line spells out which case a given file is in.
+
+### 11.5 Instruments
+
+Only the 64-byte Adlib editor records of §7.4, `n_instr` of them, one per slot in
+slot order including blank ones, running from `table[pattern_count]` to EOF with
+no slack. The record layout, the 13 editor fields, and the LEVEL/SUSTAIN
+inversion are all exactly as §7.4 describes.
+
+Consequences:
+
+* **`--fm-source` has no effect on `.ALB`.** There is no second source to choose
+  between; `oldrld.c` forces `editor` regardless of the setting.
+* §7.4's whole-bank blankness test does not apply — these records are not a
+  reserved bank but the file's only instrument data, and blankness must be
+  judged per slot via the presence flag (§11.2).
+* The rhythm field at `+0x26` is live and meaningful here, and §10's
+  range-check-don't-truth-test rule still applies.
+
+Tempo and speed are unstored, exactly as in §9: 50 Hz and 6 ticks/row, with
+songs overriding via an explicit `0x0F` on an early row.
+
+### 11.6 Can `BSSJS/ADLIB.DRV` read it?
+
+**No — but not because it refuses to.** The 1991 driver performs **no
+magic-signature check at all**. Its install routine `api_after_load` (`0x00DC` in
+`../BSSJS_ADLIB.DRV.annotated.asm`) guards only on `cmp byte [installed],0xFF`,
+then `rep movsb`s file `+0x000`–`+0x117` into `hdr_copy` (`0x0E77`) and
+`+0x118`–`+0x317` into `para_table` (`0x0F90`). The magic bytes land at
+`0x0E77`–`0x0E79` and are never read again.
+
+So it would **accept** an `.ALB` file and then produce garbage. Every offset it
+relies on has moved:
+
+| The driver assumes | `.ALB` actually has |
+|---|---|
+| track count at `+0xD8` (`0x031D`, `0x03C4`, `0x03E6`, `0x0460`, no range check) | permanent zero — the row loop would run 256 iterations |
+| paragraph table at `+0x118` | header fields; the table is after a variable cue table |
+| pattern stream at `+0x318` | wherever the paragraph table ends |
+| 256-byte instrument blocks | none at all |
+| 2-bit code words with 0/2/2/7 payloads | 16-bit presence masks with 4-byte cells |
+
+The unchecked track-count read is the decisive one: it is used directly as a loop
+bound with no clamp, so an `.ALB` file drives the driver straight off the end of
+its row buffer. There is no sense in which the 1991 driver "handles" this format.
+
+Nor does `MED.EXE`, whose `cmpw $0x9ab6` rejects it outright. **No surviving
+Ocean binary in the corpus loads `.ALB`** — its player was presumably linked into
+the games themselves, which is consistent with it being a runtime export format.
+
+### 11.7 Playback verification
+
+All 25 `.ALB` paths under `medplay/test/` render through `medplay --wav` with
+healthy amplitude — peak 4087–25117, RMS 816–4751, **no silent or near-silent
+file**. The two quietest are the sound-effect banks (`UTOFX`, `ING1`), which are
+sparse by nature.
+
+Adding `.ALB` support did not disturb the older generations: after the change,
+`decode_dump` and `osl1_dump` output is **byte-identical to the previous
+revision on all 190 `B4` and all 314 `B6` files** in the test corpus.
+
+---
+
 ## Appendix A — Reading an old `.RLD` in ten steps
 
-Written for both generations. Where two offsets are given, the first is B6 and
-the second B4.
+Written for the `B4` and `B6` generations. Where two offsets are given, the first
+is B6 and the second B4. For `20 AD 01` files see §11 — steps 1, 5, 6, 8 and 9
+all differ.
 
 1. Check bytes `+0x00`–`+0x02` for `B6 9A 01` or `B4 9A 01`. Set
    `slot_count` = 64 or 32 and `para_off` = `0x958` or `0x118` accordingly.
+   (`20 AD 01` is the `.ALB` variant of §11.)
 2. Read the name from `+0x03` (20 bytes), the order table from `+0x18`
    (128 bytes), and the track count and restart position from
    `+0x118`/`+0x119` or `+0xD8`/`+0xD9`.
@@ -660,10 +956,28 @@ the second B4.
     each generation's own loader did (§7.5). Note any non-zero rhythm codes; you
     will need OPL2 percussion mode to voice them correctly (§10).
 
+## Appendix A2 — …and an `.ALB` in seven
+
+1. Check `+0x00`–`+0x02` for `20 AD 01`. Read `track_count` at `+0x118`,
+   `restart_idx` at `+0x119`, `n_instr` at `+0x11A` and `n_cue` at `+0x11B`.
+2. Order length and pattern count exactly as steps 2–3 above.
+3. `para_off = 0x158 + 16 × n_cue`. Read `pattern_count + 1` `u16` entries from
+   it; pattern *i* is at `para_off + 16 × table[i]`, and entry `pattern_count`
+   is the start of the instrument records. There is no stale tail to skip.
+4. Read the presence/volume pairs from `+0x98` for slots `0 … n_instr − 1` only,
+   and take each default volume as `min(volume × 2, 0x7F)`.
+5. For each pattern: 64 rows, each a `u16` presence mask followed by one 4-byte
+   cell (note, 1-based instrument, effect command, effect parameter) per set
+   bit, scanned MSB-first, in ascending slot order.
+6. A row has `track_count + 5` slots; the last five are OPL2 percussion (§11.4).
+7. Read `n_instr` 64-byte editor records from the base found in step 3 — the
+   same records as §7.4, decoded the same way, LEVEL and SUSTAIN inverted. They
+   run to EOF with no slack; if they do not, something earlier is wrong.
+
 ## Appendix B — Corpus
 
-**500 old-format files**, all under `MEDIT/LAPMUSIC/` (mostly `OLDMUSIC/`, plus
-`LETHAL3/`) — 311 `B6` and 189 `B4`. All 500 parse cleanly under
+**514 old-format files**, all under `MEDIT/LAPMUSIC/` (mostly `OLDMUSIC/`, plus
+`LETHAL3/`) — 311 `B6`, 189 `B4` and 14 `.ALB`. All 514 parse cleanly under
 `src/oldrld.c`. Cross-referenced against the 326-file OSL1 corpus documented in
 `OSL1.md`.
 
@@ -682,6 +996,7 @@ almost everything):
 | `B4 9A 01` | 187 | 189 | 1991; 32 instrument slots — **this document** |
 | `B5 9A 01` | 2 | 2 | transitional; unhandled |
 | `B6 9A 01` | 309 | 311 | 1991–93; 64 instrument slots — **this document** |
+| `20 AD 01` | — | 14 | 1992; `.ALB` runtime export — **§11**. 20 paths, 14 distinct |
 | `"OSL1"` | 109 | — | not this format at all — ordinary OSL1 containers |
 | — | 2 | — | a misnamed text file |
 
@@ -696,10 +1011,11 @@ one and two files respectively is not enough to establish a layout with any
 confidence.
 
 `MED.EXE` cannot load anything but `B6`. Its magic test at `med.asm:0x2364` is a
-single `cmpw $0x9ab6` with no fallback, so 192 files are outside the editor
+single `cmpw $0x9ab6` with no fallback, so 206 files are outside the editor
 entirely. The `B4` ones belong to the 1991 standalone driver
 `MEDIT/LAPMUSIC/OLDMUSIC/BSSJS/ADLIB.DRV`, annotated in full at
-`../BSSJS_ADLIB.DRV.annotated.asm`.
+`../BSSJS_ADLIB.DRV.annotated.asm`; the `.ALB` ones belong to no surviving
+binary at all (§11.6).
 
 See `../RE-REPORT.md` §11.1b for the evidence that the generation byte tracks
 *date* rather than target device, and §11.3 for the editor-record derivation.

@@ -1,4 +1,4 @@
-/* oldrld.h - pre-OSL1 "old format" .RLD loader (generations B4 and B6)
+/* oldrld.h - pre-OSL1 "old format" song loader (generations B4, B6 and .ALB)
  *
  * Many .RLD files under LAPMUSIC/OLDMUSIC are NOT OSL1 containers: they start
  * with a 3-byte magic `Bn 9A 01` where the first byte is a *generation*
@@ -6,43 +6,55 @@
  * is chronological, both generations hold FM data, and the A/ vs R/ folder
  * convention is the orthogonal Adlib/Roland distinction).
  *
- * Two generations are supported:
+ * Three generations are supported:
  *
  *   B4  1991      32 instrument slots.  Played by the standalone INT 60h
  *                 driver LAPMUSIC/OLDMUSIC/BSSJS/ADLIB.DRV (see
  *                 BSSJS_ADLIB.DRV.annotated.asm).  MED.EXE cannot open these
  *                 at all - its magic test is a bare `cmpw $0x9ab6`.
  *   B6  1991-93   64 instrument slots.  Loaded by MED.EXE (med.asm ~0x233b).
+ *   ALB 1992      magic `20 AD 01`, always a .ALB file. A *runtime export*
+ *                 rather than an editor working file: no 256-byte instrument
+ *                 blocks, a variable-length cue table, and a different (much
+ *                 simpler) pattern encoding. 45 files in the corpus.
  *
- * The two differ only in the slot count and the fields that shift as a
- * result; the pattern encoding is bit-for-bit identical, and identical in
+ * B4 and B6 differ only in the slot count and the fields that shift as a
+ * result; their pattern encoding is bit-for-bit identical, and identical in
  * turn to OSL1's compressed position bitstream (see decode_cell() in
- * replay.c). OLD_RLD.md is the full byte-level specification of both.
+ * replay.c). .ALB shares the header and the paragraph-addressing scheme but
+ * not the cell coding. OLD_RLD.md is the full byte-level specification.
  *
- * Layout, with B4/B6 offsets side by side:
+ * Layout, with B4/B6/.ALB offsets side by side:
  *
- *   +0x000   magic `Bn 9A 01`
+ *   +0x000   magic `Bn 9A 01`, or `20 AD 01` for .ALB
  *   +0x003   song title, 20 bytes, NUL padded
  *   +0x018   pattern order table, 128 bytes of pattern indices
  *   +0x098   instrument slot table, { present:u8, volume:u8 } per slot
- *              B4: 32 slots (ends 0x0D8)      B6: 64 slots (ends 0x118)
- *   B4 0x0D8 / B6 0x118   track count
- *   B4 0x0D9 / B6 0x119   restart order position
- *   B6 0x158              cue-label table, 128 x 16 bytes (B6 only)
- *   B4 0x118 / B6 0x958   paragraph offset table, 256 x u16
+ *              B4/.ALB: 32 slots (ends 0x0D8)   B6: 64 slots (ends 0x118)
+ *   B4 0x0D8 / B6+ALB 0x118   track count
+ *   B4 0x0D9 / B6+ALB 0x119   restart order position
+ *   ALB 0x11A             instrument record count
+ *   ALB 0x11B             cue count
+ *   B6 0x158              cue-label table, 128 x 16 bytes, fixed size
+ *   ALB 0x158             cue-label table, n_cue x 16 bytes, VARIABLE size
+ *   B4 0x118 / B6 0x958 / ALB 0x158 + 16*n_cue   paragraph offset table
  *   ...      pattern stream; pattern i starts at
  *              para_table_off + para[i] * 16
  *            (the paragraph offsets are relative to the table's own offset -
- *            verified on all 500 old-format files in the corpus)
- *   ...      one 256-byte instrument block per PRESENT slot, sequentially,
- *            starting at para_table_off + para[max_pattern + 1] * 16.
+ *            verified on all 545 old-format files in the corpus)
+ *   ...      B4/B6: one 256-byte instrument block per PRESENT slot,
+ *            sequentially, starting at para_table_off + para[n_pat] * 16.
  *            The 16-byte OPL2 patch is split around the 10-byte name:
  *            +0x00..+0x07 then +0x12..+0x19.
- *   ...      B4 only (and optionally B6): a 2048-byte Adlib editor bank of
+ *   ...      B4 (and optionally B6): a 2048-byte Adlib editor bank of
  *            32 x 64-byte records, running to EOF.
+ *   ...      .ALB: no blocks at all - just n_instr 64-byte editor records,
+ *            one per slot (blank records included), running to EOF.
  *
- * Both instrument sources are parsed. Which one voices playback follows what
- * the era's own driver did, and can be overridden - see oldrld_set_fm_source.
+ * For B4/B6 both instrument sources are parsed, and which one voices playback
+ * follows what the era's own driver did; it can be overridden - see
+ * oldrld_set_fm_source. .ALB has only the editor records, so the setting has
+ * no effect there.
  */
 #ifndef MEDPLAY_OLDRLD_H
 #define MEDPLAY_OLDRLD_H
@@ -50,6 +62,11 @@
 #include <stddef.h>
 #include <stdint.h>
 #include "osl1.h"
+
+/* Value oldrld_generation() returns for the `20 AD 01` .ALB variant. It is the
+ * first magic byte, chosen for the same reason 0xB4/0xB6 are: it is what the
+ * file actually starts with, so dumps and error messages stay literal. */
+#define OLDRLD_GEN_ALB 0x20
 
 /* Which instrument source supplies the OPL2 patch for an old-format file.
  *
@@ -75,8 +92,8 @@ typedef enum {
  * osl1_load()'s signature; set it once at start-up. */
 void oldrld_set_fm_source(OldrldFmSource src);
 
-/* Generation byte (0xB4 or 0xB6) of `raw`, or 0 if it is not an old-format
- * file. */
+/* Generation byte (0xB4, 0xB6 or OLDRLD_GEN_ALB) of `raw`, or 0 if it is not
+ * an old-format file. */
 uint8_t oldrld_generation(const uint8_t *raw, size_t size);
 
 /* True if `raw` (of length >= 3) begins with an old-format magic. */

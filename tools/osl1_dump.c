@@ -5,6 +5,7 @@
  */
 #include <stdio.h>
 #include "../src/osl1.h"
+#include "../src/oldrld.h"
 
 static void dump(const char *path)
 {
@@ -22,15 +23,21 @@ static void dump(const char *path)
     printf("  Header:\n");
     if (s.old_magic) {
         static const char *SRC[] = { "auto", "block (256-byte)", "editor (64-byte Adlib bank)" };
-        printf("    format        old .RLD, generation 0x%02X (%s)\n",
+        printf("    format        %s, generation 0x%02X (%s)\n",
+               s.old_magic == OLDRLD_GEN_ALB ? "old .ALB" : "old .RLD",
                s.old_magic,
-               s.old_magic == 0xB4 ? "1991, 32 instrument slots"
-                                   : "1991-93, 64 instrument slots");
+               s.old_magic == 0xB4          ? "1991, 32 instrument slots"
+             : s.old_magic == OLDRLD_GEN_ALB
+                   ? "1992, runtime export, editor records only"
+                   : "1991-93, 64 instrument slots");
         printf("    fm source     %s\n",
                SRC[s.old_fm_source < 3 ? s.old_fm_source : 0]);
         if (s.old_rhythm_instr)
-            printf("    rhythm instr  %u (OPL2 percussion; not voiced - see OLD_RLD.md 10)\n",
-                   s.old_rhythm_instr);
+            printf("    rhythm instr  %u (OPL2 percussion%s)\n",
+                   s.old_rhythm_instr,
+                   s.old_magic == OLDRLD_GEN_ALB
+                       ? "; voiced melodically - see OLD_RLD.md 11.4"
+                       : "; not voiced - see OLD_RLD.md 10");
     }
     printf("    version       %u\n", s.version);
     printf("    constant      0x%04X\n", s.constant);
@@ -44,6 +51,9 @@ static void dump(const char *path)
         printf("    instr_table   0x%04X (%u u32 entries, records follow at 0x%04X)\n\n",
                s.instr_tab_off, s.instr_count,
                s.instr_tab_off + 4u * s.instr_count);
+    else if (s.old_magic == OLDRLD_GEN_ALB)
+        printf("    instr_table   none (.ALB: %u %u-byte editor records)\n\n",
+               s.instr_count, s.instr_size);
     else
         printf("    instr_table   none (old-format .RLD: %u fixed %u-byte blocks)\n\n",
                s.instr_count, s.instr_size);
