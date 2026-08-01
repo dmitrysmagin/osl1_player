@@ -109,7 +109,7 @@ typedef struct {
                              * mode permanently (6 melodic + 5 percussion);
                              * medplay's opl_dev is melodic-only, so this is
                              * parsed and reported but not yet voiced as a
-                             * percussion slot - see OLD_RLD.md section 10. */
+                             * percussion slot - see pre-OSL1.md section 10. */
 } Instrument;
 
 typedef struct {

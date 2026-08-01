@@ -1,10 +1,10 @@
 """alb_probe - structural analysis of the 20 AD 01 ".ALB" old-format variant.
 
 Scratch tool used to reverse the *container*; kept because the correlations it
-prints are the evidence behind OLD_RLD.md section 11.2. For the cell encoding
-see alb_cells.py and OLD_RLD.md section 11.3.
+prints are the evidence behind pre-OSL1.md section 11.2. For the cell encoding
+see alb_cells.py and pre-OSL1.md section 11.3.
 
-Two caveats, both documented in OLD_RLD.md section 11.2 and both deliberately
+Two caveats, both documented in pre-OSL1.md section 11.2 and both deliberately
 left in so the raw evidence is still visible here:
 
   * this reads the paragraph table as a fixed 128 entries; it is really

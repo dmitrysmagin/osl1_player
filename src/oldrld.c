@@ -13,7 +13,7 @@
  *                        ADLIB.DRV can read it (see the note above
  *                        decode_alb_pattern()). The layout below is derived
  *                        from the 45-file corpus and every claim it makes is
- *                        checkable - see OLD_RLD.md section 11.
+ *                        checkable - see pre-OSL1.md section 11.
  *
  * Strategy: rather than teaching the replay engine a second pattern format,
  * we decompress every old-format pattern once at load time into the exact
@@ -561,7 +561,7 @@ int oldrld_load(Song *song, char *errbuf, size_t errlen)
              * name, re-interleaved. Established by cross-referencing every
              * old-format instrument against the OSL1 corpus by name: 789 pairs
              * agree on all 11 live patch bytes under this split, and none
-             * agree under any contiguous read. See OLD_RLD.md section 7. */
+             * agree under any contiguous read. See pre-OSL1.md section 7. */
             for (int b = 0; b < 8; b++) {
                 ins->adl[b]     = raw[block + 0x00 + b];
                 ins->adl[8 + b] = raw[block + 0x12 + b];
@@ -677,7 +677,7 @@ int oldrld_load(Song *song, char *errbuf, size_t errlen)
      * OPL2 patches, and opl_dev's allocator handles the extra channels. That
      * is exact for the bass drum (2-op in rhythm mode too) and an
      * approximation for the other four, which the chip drives with single
-     * operators. See OLD_RLD.md section 11.4. */
+     * operators. See pre-OSL1.md section 11.4. */
     blk->track_count = (uint8_t)(is_alb ? track_count + ALB_RHYTHM_SLOTS
                                         : track_count);
     blk->row_count   = OLD_ROWS_PER_PAT;

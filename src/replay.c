@@ -54,6 +54,13 @@ void replay_init(Replay *r, const Song *song, int speed)
     r->row_limit   = song->blk.row_count ? song->blk.row_count : 1;
     r->tempo       = song->blk.tempo ? song->blk.tempo : 50;  /* set_tempo @0x422 */
 
+    /* Pre-OSL1 songs store no tempo at all and never change one: both era
+     * drivers program the PIT for 50 Hz once at init and leave it there, so
+     * oldrld.c's synthesised 50 is not a default but the real rate. The flag
+     * also switches effect 0x0F to its old meaning - see dispatch_row_effect. */
+    r->old_format  = song->old_magic != 0;
+    if (r->old_format) r->tempo = 50;
+
     /* Every voice starts pitch-centred (period 0x2000). A note-on resets this,
      * so it only matters if a portamento arrives before the first note. */
     for (int v = 0; v < REPLAY_MAX_VOICES; v++)
@@ -213,6 +220,16 @@ static void set_tone_porta_target(Replay *r, int v)
     else if (target > vc->period)  vc->tp_dir    = 1;        /* slide up       */
 }
 
+/* Set ticks-per-row from an effect parameter. Both drivers do this identically
+ * (TRACKER.DRV @0x1361, ADLIB.DRV fx_set_speed @0x06CB): mask to 5 bits, treat
+ * zero as a no-op rather than a stop, and restart the tick counter so the new
+ * speed takes effect from this row rather than the next. */
+static void set_speed(Replay *r, uint8_t prm)
+{
+    uint8_t sp = prm & 0x1F;
+    if (sp) { r->speed = sp; r->tick = 0; }
+}
+
 /* Row-side effect dispatch (jump table @0x115A). Runs once per voice when a row
  * is decoded, BEFORE the notes are keyed (matching trigger_note @0x1074), so the
  * retrigger setup (0x1F) can consume the primary note. Effects 0x01/0x02/0x03/
@@ -237,11 +254,9 @@ static void dispatch_row_effect(Replay *r, opl_dev *dev, int v)
         if (dev) opl_dev_keyoff(dev, v);         /* free all voices of chan v */
         break;
 
-    case 0x09: {                                 /* @0x1361: set speed       */
-        uint8_t sp = prm & 0x1F;
-        if (sp) { r->speed = sp; r->tick = 0; }
+    case 0x09:                                   /* @0x1361: set speed       */
+        set_speed(r, prm);
         break;
-    }
 
     case 0x0B:                                   /* @0x133F: position jump   */
         /* The handler @0x133F stores order = param-1, but the sequencer's
@@ -267,11 +282,29 @@ static void dispatch_row_effect(Replay *r, opl_dev *dev, int v)
         b[6] = 0;
         break;
 
-    case 0x0F: {                                 /* @0x1376: set tempo       */
-        uint16_t t = prm;
-        if (t) { if (t < 19) t = 19; r->tempo = t; } /* clamp @0x4B3: min 0x13 */
+    /* The one effect whose meaning differs between the two formats.
+     *
+     * OSL1 (TRACKER.DRV @0x1376) reads Fxx as a PIT frequency in Hz. The
+     * pre-OSL1 drivers read it as ProTracker's Fxx "ticks per row" - see
+     * fx_set_speed @0x06CB in BSSJS_ADLIB.DRV.annotated.asm, which is the
+     * same `and 0x1F / jz / reset tick / store speed` as effect 0x09 above.
+     * There is no ProTracker "Fxx >= 0x20 means BPM" split in either driver.
+     *
+     * The corpus is unambiguous about which reading the old files intend:
+     * across the 459 distinct old-format songs, every one of the 9696 Fxx
+     * parameters bar five strays lies in 1..0x20, clustering hard on 6 (the
+     * default speed), 9, 4, 5 and 8. Those are tick counts. Feeding them to
+     * the tempo path instead ran into its own `if (t < 19) t = 19` clamp and
+     * pinned the timer at 19 Hz - 38% of the correct rate - for the 271 old
+     * files that carry an Fxx, including every song opening with "0F 06". */
+    case 0x0F:                                   /* @0x1376: set tempo       */
+        if (r->old_format) {
+            set_speed(r, prm);                   /* Fxx = ticks per row      */
+        } else {
+            uint16_t t = prm;
+            if (t) { if (t < 19) t = 19; r->tempo = t; } /* clamp @0x4B3     */
+        }
         break;
-    }
 
     case 0x1F:                                   /* @0x15E8: retrigger setup */
         if (b[1]) {

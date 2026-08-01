@@ -10,7 +10,7 @@ slot order:
     +2  effect cmd  0..15, same set as B4/B6
     +3  effect par
 
-so a row is always 2 + 4 * popcount(mask) bytes. See OLD_RLD.md section 11.3
+so a row is always 2 + 4 * popcount(mask) bytes. See pre-OSL1.md section 11.3
 for how this was distinguished from the 2-bit model (length validation alone
 cannot: both give 4 * popcount).
 

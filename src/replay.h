@@ -79,7 +79,11 @@ typedef struct {
 
     /* Effect engine state (Phase 5). The DOS engine carries tempo on the PIT
      * (set_tempo @0x49D) and speed in the channel block (+0x02). */
-    uint16_t tempo;         /* timer Hz; effect 0x0F. Default 50.           */
+    uint16_t tempo;         /* timer Hz. OSL1 effect 0x0F. Default 50.      */
+    uint8_t  old_format;    /* song is pre-OSL1 (B4/B6/.ALB). Selects the
+                             * old effect table, in which 0x0F is Fxx
+                             * set-speed rather than set-tempo, so the 50 Hz
+                             * tick is immutable. See pre-OSL1.md section 9.  */
     uint8_t  jump_pending;  /* effect 0x0B (position jump) requested        */
     uint8_t  jump_order;    /* target order index for the pending jump      */
     uint8_t  break_pending; /* effect 0x0E (pattern break) requested        */

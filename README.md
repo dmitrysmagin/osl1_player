@@ -12,7 +12,7 @@ clean-room re-implementation of the DOS `TRACKER.DRV` replay engine and
 > dispatches on the magic bytes, never the extension.
 
 Old-format songs are converted to the OSL1 in-memory shape at load time, so a
-single unmodified replay engine drives both. See **`OLD_RLD.md`** for the
+single unmodified replay engine drives both. See **`pre-OSL1.md`** for the
 byte-level specification of that format and **`OSL1.md`** for the newer one.
 
 > **Status:** the Adlib path is implemented and validated. Both former unknowns
@@ -66,7 +66,7 @@ block for `B6`) and falls back to the block wherever the bank is absent or
 blank, which covers 90 of the 189 `B4` files. Force one or the other to compare.
 The flag has no effect on OSL1 songs, nor on old-format `.ALB` files, which
 carry only the editor records and so have nothing to choose between.
-`OLD_RLD.md` §7.5 has the detail.
+`pre-OSL1.md` §7.5 has the detail.
 
 ---
 
@@ -83,9 +83,9 @@ future backends on the same core.
 **Known gap:** the 1991 `ADLIB.DRV` ran the OPL2 in permanent percussion mode
 (6 melodic + 5 rhythm voices). `opl_dev.c` is melodic-only, so `B4` percussion
 instruments are parsed and reported but voiced as ordinary melodic notes — 72 of
-the 189 `B4` files are affected. See `OLD_RLD.md` §10. The same gap applies to
+the 189 `B4` files are affected. See `pre-OSL1.md` §10. The same gap applies to
 the old-format `.ALB` files, whose rows reserve five explicit percussion slots
-(`OLD_RLD.md` §11.4); those are voiced melodically too, which is exact for the
+(`pre-OSL1.md` §11.4); those are voiced melodically too, which is exact for the
 bass drum and approximate for the other four.
 
 ## 2. How it maps onto the DOS stack
@@ -181,13 +181,19 @@ There are two cell decoders, because `.ALB` does not share the older encoding:
   position stream.
 * `decode_alb_pattern()` — `.ALB`: a `u16` presence mask, one bit per slot, with
   a fixed 4-byte cell per set bit. Rows carry `track_count + 5` slots, the last
-  five being the OPL2 percussion channels (`OLD_RLD.md` §11.3–11.4).
+  five being the OPL2 percussion channels (`pre-OSL1.md` §11.3–11.4).
 
 Instruments come from either the 256-byte register blocks or the end-of-file
-Adlib editor bank, selected by `--fm-source` (§7.5 of `OLD_RLD.md`); `.ALB` has
+Adlib editor bank, selected by `--fm-source` (§7.5 of `pre-OSL1.md`); `.ALB` has
 only the editor records and forces that path. The editor path inverts the LEVEL
 and SUSTAIN fields on the way to the OPL2's attenuation convention, exactly as
 `ADLIB.DRV` did.
+
+Old songs also run a slightly different **effect table**, which `replay.c`
+selects on `Replay.old_format`: `0x0F` is ProTracker's `Fxx` *set speed* rather
+than OSL1's *set tempo*, and the 50 Hz tick is immutable because neither era
+driver ever reprogrammed the PIT. See `pre-OSL1.md` §9.1 — reading `Fxx` as a
+tempo used to pin 417 of the 504 `B4`/`B6` files at 19 Hz.
 
 Validated across all 514 old-format files in the corpus: every one loads without
 error. Adding `.ALB` left the older paths untouched — `decode_dump` and

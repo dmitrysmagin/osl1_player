@@ -30,18 +30,28 @@ project folders holding both — is set out in `../RE-REPORT.md` §11.1b.
 
 | | `B4 9A 01` | `B6 9A 01` | `20 AD 01` (§11) |
 |---|---|---|---|
-| Era | Jan–May 1991 | Aug 1991 – 1993 | 1992 |
+| Era | Jan–May 1991 | Aug 1991 – 1993 | Sep 1991 – 1992 |
 | Extension | `.RLD` | `.RLD` | `.ALB` |
-| Files in corpus | 189 | 311 | 14 distinct |
+| Files in corpus | 189 (149 distinct) | 311 (297 distinct) | 16 distinct |
 | Role | editor working file | editor working file | **runtime export** |
 | Instrument slots | 32 | 64 | 32 (only the first `n_instr` live) |
 | Cue table | absent | 128 × 16 bytes at `+0x158` | `n_cue` × 16 bytes at `+0x158` |
 | Paragraph table | `+0x118`, 256 fixed entries | `+0x958`, 256 fixed entries | `+0x158 + 16·n_cue`, `pat+1` entries |
 | Pattern stream | `+0x318` | `+0xB58` | first paragraph after the table |
 | Cell coding | 2 bits/track, 0/2/2/7 bytes | same | **1 bit/slot, fixed 4 bytes** |
+| Row width | `track_count` | `track_count` | `track_count + 5` (§11.4) |
 | 256-byte instrument blocks | yes | yes | **none** |
 | Adlib editor bank | always present; live in 99 | present in 138, live in 17 | always, `n_instr` records |
-| Loaded by | `BSSJS/ADLIB.DRV` (1991) | `MED.EXE` (1992–93) | no surviving loader |
+| Pattern break effect | `0x0D` | `0x0E` (see §9.1) | `0x0D` |
+| Loaded by | `BSSJS/ADLIB.DRV` (Apr 1991) | `MED.EXE` / `TRACKER.DRV` (1992–93) | `PIT/ADLIB/ADLIB.EXE` v3.00 (Sep 1991) |
+
+**Each generation has its own dedicated driver, and no driver reads more than
+one of them.** All three loaders begin by `rep movsb`-ing a fixed-size header
+copy out of the loaded file — `0x118` bytes in `ADLIB.DRV`, `0x158` in
+`ADLIB.EXE` v3.00 — and every offset they use afterwards is baked in. There is
+no magic check anywhere in the two standalone drivers (§11.6) and no fallback in
+`MED.EXE`, so the generations are mutually unreadable in practice even though
+they share most of their field layout on paper.
 
 `B4` and `B6` differ *only* in the slot count and the offsets that shift as a
 result — the magic layout, the order table, the slot table, the paragraph
@@ -58,6 +68,70 @@ it in full**; the earlier sections apply to it only where §11 says so.
 be opened in the editor at all. `src/oldrld.c` reads `B4`, `B6` and `.ALB` — all
 514 files load cleanly — while `B3` (1 file) and `B5` (2 files) remain unhandled
 for want of specimens.
+
+### How alike are they, exactly?
+
+**Shared by all three**, verified over the whole corpus (149 `B4`, 297 `B6`,
+16 `.ALB` distinct files):
+
+* the first `0x98` bytes are the *same structure*: 3-byte magic, `char[20]`
+  name at `+0x03`, stray editor scratch byte at `+0x17`, `u8[128]` order table
+  at `+0x18`. Order length is derived the same way in all three (last non-zero
+  index + 1), and lands in the same range (2–65, 2–65, 2–55);
+* the instrument slot table at `+0x98`, `[present][volume]` pairs. The presence
+  byte is **only ever 0 or 1** in all three; an absent slot's volume is
+  **always 0** in all three; the volume maximum is `0x40` in all three;
+* `restart_idx` immediately after `track_count`, small and always inside the
+  order;
+* paragraph addressing: `pattern_offset = para_table_off + 16 × table[i]`, with
+  entry `pattern_count` marking the end of the pattern stream. Same expression,
+  same constant, only the table's base moves;
+* 64 rows per pattern, every pattern padded to a 16-byte boundary;
+* the cell fields and their meanings: note, **1-based** instrument selector,
+  effect command, effect parameter — and the same MOD-like effect numbering,
+  with `0x0C` set-volume dominating everywhere (15% of `B4` cells, 18% of `B6`,
+  26% of `.ALB`);
+* note numbering. `ADLIB.DRV` and `ADLIB.EXE` v3.00 hold **byte-identical
+  96-entry note tables** and both index them with `note − 0x0C`, so note 12 is
+  C-1 throughout; the same twelve F-numbers appear again in OSL1's `ADLIB.DEV`;
+* **no stored tempo and no stored speed.** All three are 50 Hz, 6 ticks/row by
+  default, overridden only by an in-pattern `Fxx` (§9.1).
+
+**`B4` versus `B6`** — the smallest gap of the three. They differ in *one*
+design decision, 32 instrument slots versus 64, plus one added feature:
+
+| | `B4` | `B6` |
+|---|---|---|
+| Slot table size | `0x40` bytes | `0x80` bytes |
+| Cue table | absent | 128 × 16 bytes at `+0x158` |
+| Everything after `+0x98` | shifted down `0x40` | — |
+
+The `0x800` cue table plus the `0x40` slot shift is the whole `0x840` difference
+between `+0x318` and `+0xB58`. The pattern encoding, the 256-byte instrument
+blocks, the split-patch layout, the editor bank — all bit-identical. A `B4`
+reader and a `B6` reader differ only in two constants.
+
+**`.ALB` versus the other two** — a much larger gap, and asymmetric. It keeps
+the header and the paragraph arithmetic and throws away everything the editor
+needed:
+
+| | `B4`/`B6` | `.ALB` |
+|---|---|---|
+| Role | editor working file | runtime export |
+| Row encoding | 2-bit code word, 0/2/2/7-byte payloads | 16-bit presence mask, fixed 4-byte cells |
+| Row width | `track_count` | `track_count + 5` (percussion) |
+| Instrument data | 256-byte blocks **and** a 64-byte editor bank | editor records only |
+| Paragraph table | fixed 256 entries, stale tail | `pattern_count + 1`, no stale tail |
+| Cue table | fixed 128 entries, 1-based positions | `n_cue` entries, **0-based** |
+| Slot table | authoritative | stale past `n_instr` |
+| Layout | every offset fixed to `+0x318`/`+0xB58` | everything past `+0x158` is data-dependent |
+
+Curiously `.ALB` takes its 32-slot table from `B4` but its `track_count`
+placement at `+0x118` from `B6`, leaving `+0xD8`–`+0x117` as a permanent hole
+(zero in all 16 files). It is a hybrid of the two, not a successor to either.
+
+The one deliberate *behavioural* difference is the pattern-break command:
+`0x0D` in `B4` and `.ALB`, `0x0E` in `B6`. See §9.1.
 
 > **`.RLD` is a filename convention, not a format marker.** 109 files carrying
 > the extension are ordinary OSL1 containers, and two are a plain text file.
@@ -592,9 +666,85 @@ fixed values (`med.asm` `0x2374`), and `oldrld.c` mirrors them:
 Both era loaders fix tempo and speed the same way; neither format ever stores
 them.
 
-A song can still change speed at runtime: the first row of the first pattern
-typically carries an explicit `0x0F` (set speed) effect, exactly as an OSL1 song
-would. `OLDMUSIC/INFERNO.RLD` opens with `0F 05`.
+### 9.1 The 50 Hz tick is immutable — and `Fxx` is *speed*, not tempo
+
+**Nothing in an old-format song can change the tick rate.** `ADLIB.DRV` programs
+the PIT for 50 Hz during init and never touches it again, and `MED.EXE` fixes
+the same 50 at load. There is no stored tempo field and no effect that writes
+one. Tempo is 50 Hz for the entire run, in all three generations.
+
+> Ocean's own driver documentation says so outright. `ADLIB.EXE` v3.00's manual
+> (`.../PIT/ADLIB/README.DOC`, September 1991 — see §11.6) states, under the
+> initialisation instructions: **"Note driver runs at 50hz."** The binary agrees
+> — it programs the PIT with the literal constant `0x5D37`, i.e.
+> 1 193 182 / 23863 = 50.0016 Hz, and nothing else in the driver writes the
+> timer. The 50 in `oldrld.c` is not a fallback; it is the specification.
+
+What a song *can* change is the **speed** — ticks per row — and it does so
+through `0x0F`. This is the one effect whose meaning differs between the old
+format and OSL1, and getting it wrong is expensive:
+
+| Effect | Old format (`ADLIB.DRV`) | OSL1 (`TRACKER.DRV`) |
+|---|---|---|
+| `0x09` | stub — no-op | set speed, `param & 0x1F` |
+| `0x0F` | **set speed**, `param & 0x1F` | **set tempo**, PIT Hz, clamped `≥ 0x13` |
+
+The old handler is `fx_set_speed` @`0x06CB` in
+`../BSSJS_ADLIB.DRV.annotated.asm`: `and al,0x1F` / `jz` (so `F00` is a no-op,
+not a stop) / clear `tick_in_row` / store `speed`. That is byte-for-byte the
+same routine as OSL1's `0x09` handler @`0x1361`. Note the mask means there is
+**no ProTracker `Fxx ≥ 0x20` BPM split** — `F20` sets speed 0, i.e. does
+nothing.
+
+The corpus settles it beyond doubt. Across the 459 distinct old-format songs,
+every one of the 9696 `Fxx` parameters bar five strays falls in `1`–`0x20`, and
+they cluster on exactly the values a tick count would:
+
+| Param | 4 | 5 | 6 | 8 | 9 | others |
+|---|---:|---:|---:|---:|---:|---:|
+| B6 (8614 total) | 828 | 741 | **3168** | 437 | 2694 | 746 |
+| B4 (791) | 23 | 78 | **293** | 127 | 10 | 260 |
+| `.ALB` (291) | 17 | 1 | 41 | **97** | 27 | 108 |
+
+The mode is 6 — the format's own default speed. A tempo in Hz would cluster near
+50, and a ProTracker BPM near 125; neither appears. Conversely `0x09`, OSL1's
+set-speed, is effectively absent from old files: 4 occurrences in all of B6 and
+none at all in B4 or `.ALB`, exactly as a stubbed handler predicts.
+
+> **Correction (2026-07).** `src/replay.c` originally ran one effect table for
+> both formats, so an old-format `Fxx` reached OSL1's set-*tempo* handler. Its
+> `if (t < 19) t = 19` clamp then pinned the timer at 19 Hz — **38% of the
+> correct rate** — and the speed change the song actually asked for never
+> happened. It affected **170 of 190 B4 files and 247 of 314 B6 files**: every
+> old song carrying an `Fxx`, which is most of them. `replay.c` now switches on
+> `Replay.old_format` and routes `0x0F` to the shared `set_speed()` helper for
+> pre-OSL1 songs. After the fix no old-format file moves off 50 Hz, and 112 B4,
+> 209 B6 and 17 `.ALB` files change speed where none did before. OSL1 playback
+> is bit-identical either way.
+
+`OLDMUSIC/INFERNO.RLD` is the reference case: it opens with `0F 05`, which now
+correctly means "five ticks per row" (tempo 50, speed 6 → 5) rather than
+"19 Hz".
+
+> **`0x0D` versus `0x0E` for pattern break — settled for `B4` and `.ALB`,
+> still open for `B6`.** The same effect table shows `ADLIB.DRV` handling
+> **`0x0D`** as pattern break with `0x0E` stubbed, whereas OSL1 — and therefore
+> `replay.c` — uses `0x0E`.
+>
+> The `.ALB` driver found in 2026-07 (§11.6) agrees with `ADLIB.DRV`: its
+> per-tick dispatch table at body offset `0x1347` sends `0x0D` to a real handler
+> at `0x073B` and `0x0E` to the bare `ret` at `0x0647`. So **two of the three
+> generations demonstrably break on `0x0D`.** The corpus agrees: `0x0D` appears
+> 557 times in B4 and in 8 of the 16 `.ALB` files, `0x0E` once in B4 and in only
+> 2 `.ALB` files. `CRUSADE/CRUSFX.ALB` is the clincher — a sound-effect bank of
+> 25 one-position cues carrying exactly 25 `0x0D`s, one to terminate each.
+>
+> `B6` remains genuinely ambiguous. It was played through `TRACKER.DRV`, which
+> is the OSL1 engine, and it is the one generation where `0x0E` is common (482
+> uses against 1312 of `0x0D`). No `B6`-era driver has been found that stubs
+> `0x0E`. `replay.c` still routes `0x0E` for all formats; fixing it properly
+> means splitting the behaviour by generation rather than by `old_format`, which
+> is a change worth making deliberately rather than as a side effect.
 
 ---
 
@@ -659,8 +809,21 @@ gap in B4 playback fidelity.
 ## 11. The `.ALB` variant (`20 AD 01`)
 
 A third old-format generation, distinguished by the magic `20 AD 01` and always
-carrying the extension `.ALB`. Fourteen distinct songs survive, across four 1992
-projects — `LETHAL3`, `CHAOS`, `CRUSADE` and `UTOPIA`.
+carrying the extension `.ALB`. Sixteen distinct songs survive, across five
+projects dated September 1991 to 1992 — `PIT`, `LETHAL3`, `CHAOS`, `CRUSADE` and
+`UTOPIA`.
+
+> **Everything below is now confirmed against the driver that plays it.**
+> `MEDIT/LAPMUSIC/OLDMUSIC/OLDMUSIC/PIT/ADLIB/` holds `ADLIB.EXE` — "ADLIB
+> DRIVER (Version 3.00)", Imagitec Design Ltd., September 1991 — together with
+> its API documentation (`README.DOC`), two `.ALB` files it plays, and the
+> MASM source of the harnesses that load them (`../MUSIC.ASM`, `../FX.ASM`).
+> This section was originally reversed from the files alone; the driver has
+> since corroborated the container arithmetic (§11.2), the presence-mask row
+> encoding (§11.3), the five percussion slots (§11.4) and the effect table
+> (§11.6), in every case exactly. Citations below are offsets into the driver
+> body, which begins at file offset `0x200` (`ADLIB.EXE` is a flat binary behind
+> a 32-paragraph MZ stub — `MUSIC.ASM` loads it and calls `segment:0x200`).
 
 It is **not an editor working file**. Every structure that exists purely to
 serve the editor is either dropped or trimmed to fit:
@@ -683,16 +846,26 @@ the literal first byte, for the same reason `0xB4`/`0xB6` are used).
 
 ### 11.1 Provenance and the corpus
 
-| Project | Files |
-|---|---|
-| `LAPMUSIC/LETHAL3` | `ING4`, `PCGO`, `PCMOD` |
-| `LAPMUSIC/OLDMUSIC/CHAOS` | `ADLIB2` |
-| `LAPMUSIC/OLDMUSIC/CRUSADE` | `CRUSFX`, `DEATH`, `ING`, `MEDAL`, `TITLE` |
-| `LAPMUSIC/OLDMUSIC/UTOPIA` | `ING1`, `ING2`, `ING3`, `TITLE`, `UTOFX` |
+| Project | Files | Date |
+|---|---|---|
+| `LAPMUSIC/OLDMUSIC/PIT/ADLIB` | `ADLIB`, `ADLIBFX` | Nov 1991 |
+| `LAPMUSIC/LETHAL3` | `ING4`, `PCGO`, `PCMOD` | 1992 |
+| `LAPMUSIC/OLDMUSIC/CHAOS` | `ADLIB2` | 1992 |
+| `LAPMUSIC/OLDMUSIC/CRUSADE` | `CRUSFX`, `DEATH`, `ING`, `MEDAL`, `TITLE` | 1992 |
+| `LAPMUSIC/OLDMUSIC/UTOPIA` | `ING1`, `ING2`, `ING3`, `TITLE`, `UTOFX` | 1992 |
 
-Twenty paths under `MEDIT/` and 25 under `medplay/test/`, but only **14 distinct
-files by content** — `OLDMUSIC/` contains a nested copy of itself and
-`medplay/test/` is a working duplicate. All counts below are over the 14.
+**16 distinct files by content.** `OLDMUSIC/` contains a nested copy of itself
+and `medplay/test/` is a working duplicate, so the path count is far higher; all
+counts below are over the 16.
+
+> **Corrected 2026-07.** An earlier revision said 14 files across four 1992
+> projects. It missed `PIT/ADLIB/`, which lives only in the *nested*
+> `OLDMUSIC/OLDMUSIC/` copy and was never mirrored into `medplay/test/`. The
+> two files there are the oldest `.ALB` in the corpus (6 Nov 1991) and they ship
+> alongside the driver that plays them, which is why the omission mattered: the
+> "no surviving loader" claim in §11.6 was wrong. Both decode cleanly under the
+> model of §11.3 — 0 boundary misses, 0 out-of-range cells — which makes them a
+> genuine hold-out set, since the model was derived without them.
 
 Three of the titles at `+0x03` name a **`.MOD` source file** — `pcing4.mod`,
 `pcgo.mod`, `pcmod.mod` — which places the variant alongside the Amiga ports and
@@ -738,6 +911,35 @@ Three properties were checked on all 14 files and hold exactly:
 * every pattern decodes to precisely the byte range the table delimits;
 * `filesize − (records_off + 64 × n_instr) == 0` — **zero slack**, so `n_instr`
   is corroborated independently by the file size.
+
+> **Confirmed from the driver.** `ADLIB.EXE` v3.00's "initialise tune data" call
+> (`INT 60h`, `AX = 2`; body offset `0x00E9`, reached through the dispatch table
+> at `0x008E`) performs precisely this arithmetic, with `DS` set to the music
+> segment by the caller:
+>
+> ```
+> 00F6  mov di,0xcbf / mov cx,0x158 / rep movsb   ; header copy is 0x158 bytes
+> 010B  mov cl,[0xdda]                            ; 0xCBF+0x11B = n_cue
+> 0111  shl cx,1 x4 / add si,cx                   ; si = 0x158 + 16 * n_cue
+> 011B  mov cx,[0x15a4] / shl cx,1                ; (pattern_count) * 2
+> 0121  and cx,-0x10 / add cx,0x10                ;   rounded up to a paragraph
+> 0128  mov di,0xe47 / rep movsb                  ; copy the paragraph table
+> 012D  mov [es:0x15a6],si                        ; si now = pattern stream base
+> ```
+>
+> Three things fall out of this. The header copy is `0x158` bytes, i.e. exactly
+> up to the cue table, versus `0x118` in the 1991 `ADLIB.DRV` — the two drivers
+> disagree on the header length by the same amount the two formats do. `n_cue`
+> is read from `+0x11B` and multiplied by 16, fixing both the field and the
+> entry size. And the table copy length is `((pattern_count × 2) & ~15) + 16`,
+> which is the paragraph-padded size of `pattern_count + 1` `u16` entries —
+> so the driver takes the **end of the padded table** as the pattern-stream
+> base and never consults `table[0]` for it. That is a stronger statement than
+> the `table[0] == ceil((pat+1)·2/16)` identity above: the format cannot carry
+> a stale tail, because the driver would read the tail as pattern data.
+>
+> `track_count` is read at `[es:0xdd7]` = `0xCBF + 0x118` (body `0x055F`),
+> confirming the odd `B6`-style placement despite the `B4`-style 32-slot table.
 
 #### The cue table is 0-based here
 
@@ -807,10 +1009,46 @@ is why the same replay engine plays both without modification.
 > signature of two independent cells being read as one. One bit per slot, four
 > bytes per cell, is the reading under which every byte has exactly one meaning.
 >
-> Validated over all 14 files by `tools/alb_cells.py`: 29 019 cells decoded,
+> **Confirmed from the driver (2026-07).** The statistical argument above is
+> now redundant: `ADLIB.EXE` v3.00's row reader is explicit about it. At body
+> offset `0x054C` it does a single `lodsw` to take the mask into `DX`, decodes
+> `track_count` melodic slots, then five more:
+>
+> ```
+> 054C  lodsw / mov dx,ax        ; DX = the row's presence mask
+> 055A  call 0x5a4               ; melodic slots (count from the track table)
+> 055F  mov cl,[es:0xdd7]        ; track_count
+> 0566  shl dx,1 / jnc / add si,4 / loop     ; MSB first; a set bit is 4 bytes
+> 056F  mov cx,5 / mov di,0x10cb / call 0x58e ; then exactly FIVE more slots
+>
+> 058E  shl dx,1 / jnc 0x59a     ; the slot decoder
+> 0592  movsw / movsw            ;   bit set  -> copy 4 bytes
+> 0594  add di,0x12              ;   (22-byte stride into the voice block)
+> 059A  xor ax,ax / stosw / stosw ;  bit clear -> write an empty cell
+> ```
+>
+> `shl dx,1` + `jnc` is MSB-first bit 15 → slot 0; the payload is
+> unconditionally four bytes; and the row is `track_count` slots followed by a
+> hardcoded `mov cx,5`. That is §11.3 and §11.4 in six instructions.
+>
+> The cell handler at `0x05C6` reads `[si+0]` note, `[si+1]` instrument,
+> `[si+2]` effect, `[si+3]` parameter, decrements the instrument and indexes the
+> slot table at `0xCBF + 0x98` to fetch the default volume — confirming the
+> field order, the 1-based selector and §4's volume rule. It then does
+> `cmp byte [si+0x2],0x0C` and, on a match, substitutes `[si+3]` for the default
+> volume and zeroes the effect: `0Ch` **overrides** the slot default, exactly as
+> §4 states.
+>
+> Validated over all 16 files by `tools/alb_cells.py`: 32 493 cells decoded,
 > every pattern landing exactly on its stated table boundary, every note in
-> 17–96, every instrument selector within `n_instr`, and no cell entirely empty
-> (a set mask bit always carries something).
+> 17–96, and no cell entirely empty (a set mask bit always carries something).
+>
+> One cell in one file breaks the instrument-selector bound: `PIT/ADLIBFX.ALB`
+> selects instrument 12 where `n_instr` is 4. That is a data defect rather than
+> a decode failure — the file is a scratch bank whose first record is named
+> `TEST1`, its record count is corroborated by a zero-slack file size, and the
+> driver would simply index past the array. Every other selector in the corpus
+> is in range.
 
 Effect usage across the corpus is dominated by the same two commands as the
 older generations — `0x0C` set volume (8262 cells) and `0x0A` volume slide
@@ -901,18 +1139,95 @@ relies on has moved:
 
 The unchecked track-count read is the decisive one: it is used directly as a loop
 bound with no clamp, so an `.ALB` file drives the driver straight off the end of
-its row buffer. There is no sense in which the 1991 driver "handles" this format.
+its row buffer. There is no sense in which the April 1991 driver "handles" this
+format. Nor does `MED.EXE`, whose `cmpw $0x9ab6` rejects it outright.
 
-Nor does `MED.EXE`, whose `cmpw $0x9ab6` rejects it outright. **No surviving
-Ocean binary in the corpus loads `.ALB`** — its player was presumably linked into
-the games themselves, which is consistent with it being a runtime export format.
+#### The driver that *does* read it (found 2026-07)
+
+An earlier revision of this section concluded that no surviving binary loads
+`.ALB`. **That was wrong.** `MEDIT/LAPMUSIC/OLDMUSIC/OLDMUSIC/PIT/ADLIB/` — a
+directory that exists only in the nested `OLDMUSIC/` copy, which is why it was
+missed — contains the whole delivery kit:
+
+| File | Date | What it is |
+|---|---|---|
+| `ADLIB.EXE` | 21 Sep 1991 | **"ADLIB DRIVER (Version 3.00)"**, 6112-byte flat binary behind a 32-paragraph MZ stub. The `.ALB` player. |
+| `README.DOC` | 26 Sep 1991 | Its API manual (also at `PIT/ADREAD.DOC`). |
+| `MUSIC.EXE`, `FX.EXE` | 8 Oct 1991 | PKLITE'd harnesses; their strings include `adlib.alb` / `adlibfx.alb` and `music driver v. 3.00 , (c) 1991 Imagitec Design Ltd.` |
+| `../MUSIC.ASM`, `../FX.ASM` | 8 Oct 1991 | **MASM source** of those harnesses. |
+| `ADLIB.ALB`, `ADLIBFX.ALB` | 6 Nov 1991 | The songs it plays. |
+
+`ADLIB.EXE` is a direct descendant of `BSSJS/ADLIB.DRV`: 100 of 359 sampled
+32-byte windows of the older driver appear verbatim in it, the `INT 60h` API is
+the same, and the 96-entry note table is byte-identical (`0x0157 0x016C 0x0181 …`
+at `0x1203` here, `0x1392` there, with the same `sub bl,0x0C` C-1 base). It is
+the *same driver, one generation on*, retargeted at the exported container.
+
+`MUSIC.ASM` shows how it is used, and independently corroborates the container:
+it loads the driver as a flat binary at offset 0 of a segment, calls it, then
+issues `AX=2` "afterload" with `DX` = the music segment; and its `dump_titles`
+routine walks the loaded file from **`si = 158h` printing 10 characters per
+entry with `add si,16-10`** — the cue table of §5, at the offset and stride this
+document gives it, printed by Ocean's own diagnostic code.
+
+`README.DOC` also settles §9 in one line: **"Note driver runs at 50hz."**
+
+Two caveats on the find. First, this v3.00 driver is `.ALB`-only — its header
+copy is `0x158` bytes and it reads `n_cue` at `+0x11B`, so handed a `B4` file it
+would compute `n_cue = 0`, put the paragraph table at `+0x158` instead of
+`+0x118`, and produce garbage in the mirror image of the failure tabulated
+above. Second, the games themselves presumably still linked their own copy; what
+survives here is the driver as *delivered to the developer*, alongside a test
+harness, which is if anything better evidence than a shipped game would be.
+
+#### The v3.00 effect table
+
+Two 32-entry dispatch tables, indexed by `effect & 0x1F` (body `0x062B` and
+`0x0639`) exactly as in `ADLIB.DRV`: one run once per row, one run every tick.
+`0x0647`/`0x0648` are the bare-`ret` stubs.
+
+| Cmd | Per-row | Per-tick | Meaning |
+|---|---|---|---|
+| `0x01` | `0x06DE` | stub | portamento up |
+| `0x02` | `0x0708` | stub | portamento down |
+| `0x03` | `0x07A6` | stub | tone portamento |
+| `0x04` | stub | `0x0838` | vibrato — **implemented here**, unlike `ADLIB.DRV` |
+| `0x06` | stub | `0x0734` | note off |
+| `0x0A` | `0x06A8` | stub | volume slide |
+| `0x0B` | stub | `0x0743` | position jump |
+| `0x0C` | stub | `0x0753` | set volume |
+| `0x0D` | stub | `0x073B` | **pattern break** |
+| `0x0F` | stub | `0x0766` | **set speed** |
+
+Everything else — `0x00`, `0x05`, `0x07`, `0x08`, **`0x09`**, **`0x0E`** and
+`0x10`–`0x1F` — is a stub in both tables. Two consequences, both of which
+confirm §9.1 from a second driver: `0x09` does nothing (and duly appears zero
+times in the `.ALB` corpus), and `0x0F` is *set speed*, its handler being the
+familiar four instructions —
+
+```
+0766  xor ah,ah / mov al,[si+0x3] / and al,0x1f / jz ret
+076F  mov di,[0x1149] / mov byte [di+0x6],0 / mov [di+0x2],al
+```
+
+— mask to 5 bits, treat zero as a no-op, reset the tick counter, store the
+speed. Byte-for-byte the same routine as `ADLIB.DRV`'s `fx_set_speed` @`0x06CB`
+and OSL1's `0x09` handler.
+
+The 50 Hz claim is likewise hard-coded rather than derived: the "internal
+interrupts on" call (`AX = 0x0A`) does `mov ax,0x5D37` and programs the PIT with
+it (`0x0335`), and `0x5D37` = 23863, giving 1 193 182 / 23863 = **50.0016 Hz**.
+Turning interrupts off writes divisor 0, restoring the BIOS 18.2 Hz. Nothing
+between those two points touches the timer, and no file field reaches it.
 
 ### 11.7 Playback verification
 
 All 25 `.ALB` paths under `medplay/test/` render through `medplay --wav` with
 healthy amplitude — peak 4087–25117, RMS 816–4751, **no silent or near-silent
 file**. The two quietest are the sound-effect banks (`UTOFX`, `ING1`), which are
-sparse by nature.
+sparse by nature. The two `PIT` files found later render cleanly too —
+`ADLIB.ALB` peak 23237 / RMS 4568, `ADLIBFX.ALB` peak 7606 / RMS 467, the latter
+being a four-effect scratch bank.
 
 Adding `.ALB` support did not disturb the older generations: after the change,
 `decode_dump` and `osl1_dump` output is **byte-identical to the previous
