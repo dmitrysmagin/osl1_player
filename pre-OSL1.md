@@ -66,7 +66,7 @@ it in full**; the earlier sections apply to it only where §11 says so.
 `MED.EXE` accepts `B6` only: its magic test at `med.asm:0x2364` is a bare
 `cmpw $0x9ab6` with no fallback, so the `B3`/`B4`/`B5` and `.ALB` files cannot
 be opened in the editor at all. `src/oldrld.c` reads `B4`, `B6` and `.ALB` — all
-514 files load cleanly — while `B3` (1 file) and `B5` (2 files) remain unhandled
+524 files load cleanly — while `B3` (1 file) and `B5` (2 files) remain unhandled
 for want of specimens.
 
 ### How alike are they, exactly?
@@ -132,6 +132,17 @@ placement at `+0x118` from `B6`, leaving `+0xD8`–`+0x117` as a permanent hole
 
 The one deliberate *behavioural* difference is the pattern-break command:
 `0x0D` in `B4` and `.ALB`, `0x0E` in `B6`. See §9.1.
+
+One difference is not by design but is worth knowing about when writing a
+reader. Decoding every pattern of every distinct file — 207 085 `B4` cells,
+455 067 `B6` and 32 493 `.ALB` — every pattern in every generation lands exactly
+on the byte boundary its paragraph table gives (0 misses), and `B4` and `.ALB`
+produce no cell outside the legal note, selector and effect ranges at all. `B6`
+produces a few: **3 of its 297 files** carry roughly 200 cells with notes past
+108, selectors past 64 or effect commands past `0x0F` — `OLDMUSIC/TUNE.RLD` and
+two variants of `DEMO/MOON.RLD`. They are the format's oldest and least tidy
+specimens, they still render, and a reader should clamp rather than reject.
+`tools/gen_compare.py` reproduces all of the above.
 
 > **`.RLD` is a filename convention, not a format marker.** 109 files carrying
 > the extension are ordinary OSL1 containers, and two are a plain text file.
@@ -672,6 +683,13 @@ them.
 the PIT for 50 Hz during init and never touches it again, and `MED.EXE` fixes
 the same 50 at load. There is no stored tempo field and no effect that writes
 one. Tempo is 50 Hz for the entire run, in all three generations.
+
+> **Confirmed in writing (2026-07).** `PIT/ADLIB/README.DOC` — Imagitec's own
+> API manual for the `.ALB` driver (§11.6) — states it outright: **"Note driver
+> runs at 50hz."** The driver backs the sentence up with a literal:
+> `mov ax,0x5D37` immediately before the PIT write, and 1 193 182 / 23863 =
+> 50.0016 Hz. Both the rate and its immutability are therefore documented by
+> the authors, not merely inferred from disassembly.
 
 > Ocean's own driver documentation says so outright. `ADLIB.EXE` v3.00's manual
 > (`.../PIT/ADLIB/README.DOC`, September 1991 — see §11.6) states, under the
@@ -1291,29 +1309,33 @@ all differ.
 
 ## Appendix B — Corpus
 
-**514 old-format files**, all under `MEDIT/LAPMUSIC/` (mostly `OLDMUSIC/`, plus
-`LETHAL3/`) — 311 `B6`, 189 `B4` and 14 `.ALB`. All 514 parse cleanly under
-`src/oldrld.c`. Cross-referenced against the 326-file OSL1 corpus documented in
-`OSL1.md`.
+**524 old-format files** under `MEDIT/` (all inside `LAPMUSIC/` — mostly
+`OLDMUSIC/`, plus `LETHAL3/`) — 313 `B6`, 189 `B4` and 22 `.ALB`, every one of
+which parses cleanly under `src/oldrld.c`. A further 3 files carry the
+unhandled `B3`/`B5` magics. Cross-referenced against the 326-file OSL1 corpus
+documented in `OSL1.md`.
+
+Deduplicated by content the totals are much lower — **297 `B6`, 149 `B4` and 16
+`.ALB`** — because `OLDMUSIC/` contains a nested copy of itself. (`medplay/test/`
+is a further working duplicate of the whole tree and is excluded from every
+figure in this appendix.) Where a claim in this document is statistical it
+counts distinct files; where it is about the archive as found, paths.
 
 Files are classified **by magic, not by extension**. Four old-format files carry
 no extension at all — `OLDMUSIC/DEMO/LD` (`B4`) and `OLDMUSIC/DG/TOSS` (`B6`),
-each appearing twice because `OLDMUSIC/` contains a nested copy of itself. The
-`.RLD`-only counts are correspondingly 187 and 309.
+each appearing twice because `OLDMUSIC/` contains a nested copy of itself.
 
-Counting the authoritative copy under `MEDIT/` (610 `.RLD` files;
-`medplay/test/` is a near-duplicate working set, so counting both double-counts
-almost everything):
+Counting the authoritative copy under `MEDIT/` only:
 
-| Magic | `.RLD` | +extensionless | Notes |
-|-------|-------:|---------------:|-------|
-| `B3 9A 01` | 1 | 1 | single specimen; unhandled |
-| `B4 9A 01` | 187 | 189 | 1991; 32 instrument slots — **this document** |
-| `B5 9A 01` | 2 | 2 | transitional; unhandled |
-| `B6 9A 01` | 309 | 311 | 1991–93; 64 instrument slots — **this document** |
-| `20 AD 01` | — | 14 | 1992; `.ALB` runtime export — **§11**. 20 paths, 14 distinct |
-| `"OSL1"` | 109 | — | not this format at all — ordinary OSL1 containers |
-| — | 2 | — | a misnamed text file |
+| Magic | `.RLD` | `.ALB` | none | paths | distinct | Notes |
+|-------|-------:|-------:|-----:|------:|---------:|-------|
+| `B3 9A 01` | 1 | — | — | 1 | 1 | single specimen; unhandled |
+| `B4 9A 01` | 187 | — | 2 | 189 | 149 | 1991; 32 instrument slots — **this document** |
+| `B5 9A 01` | 2 | — | — | 2 | 2 | transitional; unhandled |
+| `B6 9A 01` | 311 | — | 2 | 313 | 297 | 1991–93; 64 instrument slots — **this document** |
+| `20 AD 01` | — | 22 | — | 22 | 16 | 1991–92; runtime export — **§11** |
+| `"OSL1"` | 109 | many | — | — | — | not this format at all — ordinary OSL1 containers |
+| — | 2 | — | — | 2 | — | a misnamed text file |
 
 Note the last two rows: `.RLD` is a filename convention covering song files of
 every vintage and every device, not a format marker. The 109 OSL1-magic ones
@@ -1326,11 +1348,13 @@ one and two files respectively is not enough to establish a layout with any
 confidence.
 
 `MED.EXE` cannot load anything but `B6`. Its magic test at `med.asm:0x2364` is a
-single `cmpw $0x9ab6` with no fallback, so 206 files are outside the editor
-entirely. The `B4` ones belong to the 1991 standalone driver
-`MEDIT/LAPMUSIC/OLDMUSIC/BSSJS/ADLIB.DRV`, annotated in full at
-`../BSSJS_ADLIB.DRV.annotated.asm`; the `.ALB` ones belong to no surviving
-binary at all (§11.6).
+single `cmpw $0x9ab6` with no fallback, so 208 files are outside the editor
+entirely. Each has its own standalone driver: the `B4` ones belong to
+`MEDIT/LAPMUSIC/OLDMUSIC/BSSJS/ADLIB.DRV` (April 1991), annotated in full at
+`../BSSJS_ADLIB.DRV.annotated.asm`; the `.ALB` ones to
+`MEDIT/LAPMUSIC/OLDMUSIC/OLDMUSIC/PIT/ADLIB/ADLIB.EXE` (v3.00, September 1991),
+which arrives with its API manual, its MASM test harnesses and their source
+(§11.6).
 
 See `../RE-REPORT.md` §11.1b for the evidence that the generation byte tracks
 *date* rather than target device, and §11.3 for the editor-record derivation.

@@ -4,6 +4,11 @@ Scratch tool used to reverse the *container*; kept because the correlations it
 prints are the evidence behind pre-OSL1.md section 11.2. For the cell encoding
 see alb_cells.py and pre-OSL1.md section 11.3.
 
+The container has since been confirmed against the driver that plays it -
+"ADLIB DRIVER (Version 3.00)", PIT/ADLIB/ADLIB.EXE - which performs exactly the
+arithmetic below: 0x158-byte header copy, n_cue from +0x11B, paragraph table of
+pattern_count + 1 u16s rounded up to a paragraph. See pre-OSL1.md section 11.6.
+
 Two caveats, both documented in pre-OSL1.md section 11.2 and both deliberately
 left in so the raw evidence is still visible here:
 
@@ -12,7 +17,7 @@ left in so the raw evidence is still visible here:
     --detail past that point is pattern data, not table;
   * the 32-entry slot table is only meaningful for slots below n_instr - the
     export does not clear what it inherits, so present_count and n_instr
-    disagree in 11 of the 14 distinct files.
+    disagree in 11 of the 16 distinct files.
 
 Layout under test:
     +0x000  magic 20 AD 01

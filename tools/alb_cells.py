@@ -12,7 +12,13 @@ slot order:
 
 so a row is always 2 + 4 * popcount(mask) bytes. See pre-OSL1.md section 11.3
 for how this was distinguished from the 2-bit model (length validation alone
-cannot: both give 4 * popcount).
+cannot: both give 4 * popcount). The model has since been confirmed against the
+driver's own row reader in PIT/ADLIB/ADLIB.EXE, body 0x054C-0x0599.
+
+Expected result over MEDIT/: 16 files, 32 493 cells, one known failure -
+PIT/ADLIBFX.ALB selects instrument 12 where n_instr is 4. That is a defect in a
+scratch file (its first record is named TEST1) rather than a decode error; the
+record count is corroborated by a zero-slack file size.
 
 This script decodes every pattern in every .ALB file and checks:
 

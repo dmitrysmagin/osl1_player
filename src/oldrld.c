@@ -1,19 +1,25 @@
 /* oldrld.c - pre-OSL1 "old format" song loader, generations B4, B6 and .ALB
  *
  * See oldrld.h for the on-disk layout. This is a clean-room reimplementation
- * of two loaders, plus one format reversed from the corpus alone:
+ * of three loaders, one per generation - none of which reads more than its own:
  *
  *   B6 (0xB6 0x9A 0x01)  what MED.EXE does at med.asm ~0x233b-0x2717.
- *   B4 (0xB4 0x9A 0x01)  what the 1991 standalone driver
+ *   B4 (0xB4 0x9A 0x01)  what the April 1991 standalone driver
  *                        LAPMUSIC/OLDMUSIC/BSSJS/ADLIB.DRV does in its
  *                        install entry (offset 0x00EC-0x013C) and
  *                        inst_fetch (0x07B8) / set_operator_patch (0x0AD0).
  *                        Full annotation: BSSJS_ADLIB.DRV.annotated.asm.
- *   ALB (0x20 0xAD 0x01) has no surviving loader to copy: neither MED.EXE nor
- *                        ADLIB.DRV can read it (see the note above
- *                        decode_alb_pattern()). The layout below is derived
- *                        from the 45-file corpus and every claim it makes is
- *                        checkable - see pre-OSL1.md section 11.
+ *   ALB (0x20 0xAD 0x01) what "ADLIB DRIVER (Version 3.00)", September 1991,
+ *                        does in its INT 60h AX=2 "initialise tune data" call.
+ *                        The driver is LAPMUSIC/OLDMUSIC/OLDMUSIC/PIT/ADLIB/
+ *                        ADLIB.EXE - a flat binary behind a 32-paragraph MZ
+ *                        stub, so body offsets below are file offset - 0x200.
+ *                        Header copy and paragraph table: body 0x00E9-0x012D.
+ *                        Row decoder: 0x054C-0x0575. Cell handler: 0x05C6.
+ *                        See pre-OSL1.md section 11.
+ *
+ * The layout was originally reversed from the corpus alone; ADLIB.EXE was only
+ * found afterwards, and agrees with it exactly. Section 11.6 quotes the code.
  *
  * Strategy: rather than teaching the replay engine a second pattern format,
  * we decompress every old-format pattern once at load time into the exact
@@ -292,14 +298,18 @@ static int decode_old_pattern(const uint8_t *raw, size_t sz, size_t cursor,
  *
  * The row has track_count + ALB_RHYTHM_SLOTS slots, not track_count. The five
  * extra slots are the OPL2's rhythm-mode percussion channels, which the 1991
- * ADLIB.DRV keeps permanently enabled. Two independent checks pin this down
- * across all 45 files:
+ * ADLIB.DRV keeps permanently enabled. Three independent checks pin this down:
  *
  *   - no mask bit at or above track_count + 5 is ever set (0 violations),
  *     and files with 4, 5 and 6 tracks each stop exactly 5 slots later;
  *   - the instruments selected in slot track_count + k are precisely those
  *     whose editor record carries rhythm code 6 + k (32 of 33 cases; the
- *     names are BDRUM1, SNARE1, ... , HIHAT2, in that order).
+ *     names are BDRUM1, SNARE1, ... , HIHAT2, in that order);
+ *   - the v3.00 driver says so outright. Its row reader takes the mask with a
+ *     single lodsw, decodes [es:0xdd7] = header+0x118 = track_count melodic
+ *     slots, then does `mov cx,5` and decodes five more (body 0x055F-0x0575).
+ *     Its slot decoder is `shl dx,1 / jnc / movsw / movsw` - MSB-first, four
+ *     bytes per set bit, an explicitly zeroed cell when the bit is clear.
  *
  * We decode the mask over all 16 bits regardless, because the payload has to
  * be consumed to stay in sync whatever the bit means.

@@ -3,17 +3,22 @@
 `medplay.exe` is a standalone Windows console tool that plays Ocean OSL1 songs
 (`.ALB` / `.ADL` / `.LAP` / `.SCC`) **and all three pre-OSL1 "old" generations** —
 `B4 9A 01` (1991) and `B6 9A 01` (1991–93), both usually `.RLD`, plus the
-`20 AD 01` runtime export that always carries `.ALB` (1992) — through a
+`20 AD 01` runtime export that always carries `.ALB` (1991–92) — through a
 clean-room re-implementation of the DOS `TRACKER.DRV` replay engine and
 `ADLIB.DEV` sound backend, synthesised by Nuked-OPL3 and output via SDL2.
 
 > Note that `.ALB` is ambiguous: most `.ALB` files are ordinary OSL1 Adlib
-> containers, but 14 of them are the old-format variant above. `medplay`
+> containers, but 16 of them are the old-format variant above. `medplay`
 > dispatches on the magic bytes, never the extension.
 
 Old-format songs are converted to the OSL1 in-memory shape at load time, so a
 single unmodified replay engine drives both. See **`pre-OSL1.md`** for the
 byte-level specification of that format and **`OSL1.md`** for the newer one.
+
+The three old generations share a header, an order table, a slot table, the
+paragraph-addressing scheme and the note numbering, but each has its own
+dedicated DOS driver and **no driver reads more than one of them**.
+`pre-OSL1.md` sets them side by side under *"How alike are they, exactly?"*.
 
 > **Status:** the Adlib path is implemented and validated. Both former unknowns
 > — the compressed row decoder and the Adlib note/instrument model — are fully
@@ -191,15 +196,27 @@ and SUSTAIN fields on the way to the OPL2's attenuation convention, exactly as
 
 Old songs also run a slightly different **effect table**, which `replay.c`
 selects on `Replay.old_format`: `0x0F` is ProTracker's `Fxx` *set speed* rather
-than OSL1's *set tempo*, and the 50 Hz tick is immutable because neither era
-driver ever reprogrammed the PIT. See `pre-OSL1.md` §9.1 — reading `Fxx` as a
-tempo used to pin 417 of the 504 `B4`/`B6` files at 19 Hz.
+than OSL1's *set tempo*, and the 50 Hz tick is immutable because no era driver
+ever reprogrammed the PIT. See `pre-OSL1.md` §9.1 — reading `Fxx` as a tempo
+used to pin 417 of the 504 `B4`/`B6` files at 19 Hz. Ocean's own driver manual
+(`PIT/ADLIB/README.DOC`, 1991) says it in as many words: *"Note driver runs at
+50hz."*
 
-Validated across all 514 old-format files in the corpus: every one loads without
+One known deviation remains: `B4` and `.ALB` break patterns on `0x0D`, `B6` and
+OSL1 on `0x0E`. `replay.c` currently uses `0x0E` for all formats — see
+`pre-OSL1.md` §9.1.
+
+Validated across all 524 old-format files in the corpus: every one loads without
 error. Adding `.ALB` left the older paths untouched — `decode_dump` and
 `osl1_dump` output is byte-identical to the previous build on all 190 `B4` and
-all 314 `B6` files in `test/`, and all 25 `.ALB` paths render with healthy
-amplitude (peak 4087–25117, no silent file).
+all 314 `B6` files in `test/`, and every `.ALB` renders with healthy amplitude
+(peak 4087–25117, no silent file).
+
+The `.ALB` decoder was written from the files alone, before the driver that
+plays them was found. It agrees with `ADLIB.EXE` v3.00 exactly — header copy
+length, `n_cue` placement, paragraph-table padding, MSB-first presence mask,
+fixed 4-byte cell, five trailing percussion slots, and the effect table.
+`pre-OSL1.md` §11.6 quotes the relevant code.
 
 ### `replay.c` — clean-room `TRACKER.DRV`
 - Per-voice runtime cell `RVoice.b[]` (written by `decode_cell` @0x1526):
@@ -333,15 +350,25 @@ work.
 | `dro_dump.py` | DRO v2.0 → `RRR=VV` trace |
 | `dro_patches.py` | distinct operator patches at note-ons in a DRO |
 | `dro_notes.py` | note-on events (frame, channel, note) from a DRO |
+| `gen_compare.py` | side-by-side `B4`/`B6`/`.ALB` field and cell census — the evidence behind `pre-OSL1.md` *"How alike are they, exactly?"* |
+| `alb_probe.py` | `.ALB` container structure (`pre-OSL1.md` §11.2) |
+| `alb_cells.py` | `.ALB` presence-mask cell validation (`pre-OSL1.md` §11.3) |
+| `osl1_scan.py` | magic/device census over a corpus |
+| `instr_probe.py` | instrument-record correlation between corpora |
+| `cmp_pitch.py`, `cmp_pitch_global.py`, `regcmp.py` | register/pitch trace comparison |
 
 ## 9. Layout
 ```
 medplay/
-├── README.md
+├── README.md            this file
+├── OSL1.md              OSL1 container specification
+├── pre-OSL1.md          B4 / B6 / .ALB specification
 ├── Makefile
-├── src/{main,osl1,replay,opl_dev,opl3}.{c,h}
+├── src/{main,osl1,oldrld,replay,opl_dev,opl3}.{c,h}
 ├── tools/{osl1_dump,cell_dump,decode_dump,opl_scale}.c
-│         {dro_dump,dro_patches,dro_notes}.py
+│         {dro_dump,dro_patches,dro_notes}.py          DRO capture analysis
+│         {gen_compare,alb_probe,alb_cells}.py         pre-OSL1 format analysis
+│         {osl1_scan,instr_probe,cmp_pitch,regcmp}.py  corpus analysis
 └── test/{TITLE.ADL, title.dro, *.trace}
 ```
 
