@@ -1,10 +1,10 @@
 """gen_compare - confirm, field by field, how alike the three pre-OSL1
 generations B4 9A 01, B6 9A 01 and 20 AD 01 actually are.
 
-This is the evidence behind the "How alike are they, exactly?" section of
-pre-OSL1.md. It reads all three generations with one code path wherever the
-format permits, which is the point: the places it needs a branch are exactly
-the places the formats differ.
+This is the evidence behind README.md's "The three pre-OSL1 generations"
+section. B4/B6 are specified in RLD.md, 20 AD 01 in ALB.md. This script reads
+all three with one code path wherever the format permits, which is the point:
+the places it needs a branch are exactly the places the formats differ.
 
 Walks a corpus, deduplicates by SHA-1, and reports per generation:
 
@@ -14,7 +14,7 @@ Walks a corpus, deduplicates by SHA-1, and reports per generation:
   * paragraph table[0], which fixes the pattern-stream base
   * decoded cells: note range, instrument selector bound, effect histogram
   * the 0x0F parameter distribution, which is what settles Fxx = speed, not
-    tempo (pre-OSL1.md section 9.1)
+    tempo (RLD.md section 9.1)
   * tail slack after the instrument region, which corroborates the block and
     record counts independently of anything parsed
 

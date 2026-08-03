@@ -36,8 +36,8 @@ static void dump(const char *path)
             printf("    rhythm instr  %u (OPL2 percussion%s)\n",
                    s.old_rhythm_instr,
                    s.old_magic == OLDRLD_GEN_ALB
-                       ? "; voiced melodically - see pre-OSL1.md 11.4"
-                       : "; not voiced - see pre-OSL1.md 10");
+                       ? "; voiced melodically - see ALB.md 8"
+                       : "; not voiced - see RLD.md 10");
     }
     printf("    version       %u\n", s.version);
     printf("    constant      0x%04X\n", s.constant);

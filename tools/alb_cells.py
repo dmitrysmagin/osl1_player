@@ -10,7 +10,7 @@ slot order:
     +2  effect cmd  0..15, same set as B4/B6
     +3  effect par
 
-so a row is always 2 + 4 * popcount(mask) bytes. See pre-OSL1.md section 11.3
+so a row is always 2 + 4 * popcount(mask) bytes. See ALB.md section 7
 for how this was distinguished from the 2-bit model (length validation alone
 cannot: both give 4 * popcount). The model has since been confirmed against the
 driver's own row reader in PIT/ADLIB/ADLIB.EXE, body 0x054C-0x0599.
@@ -24,7 +24,7 @@ This script decodes every pattern in every .ALB file and checks:
 
   * each pattern ends exactly where the paragraph table says the next begins,
     after padding to a 16-byte boundary;
-  * no mask bit at or above track_count + 5 is ever set (section 11.4 - the
+  * no mask bit at or above track_count + 5 is ever set (ALB.md section 8 - the
     five extra slots are the OPL2 percussion channels);
   * every instrument selector is within n_instr;
   * notes are 0 or in 17..96, and no cell is entirely empty.

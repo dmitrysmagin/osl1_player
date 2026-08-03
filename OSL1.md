@@ -45,7 +45,7 @@ OSL1 files appear with several extensions, one per Ocean project/target:
 Note that **not every `.RLD` is an OSL1 file**: 311 of them are in an older,
 entirely different format that `MED.EXE` loads through a separate code path.
 They are identified by the magic `B6 9A 01` in place of `"OSL1"` and are
-specified in `pre-OSL1.md`.
+specified in `RLD.md` and `ALB.md`.
 
 **The extension does not determine the playback hardware, and neither does any
 header byte.** OSL1 is a *device-agnostic* container. `MED.EXE` selects the

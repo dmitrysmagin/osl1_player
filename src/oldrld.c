@@ -16,7 +16,7 @@
  *                        stub, so body offsets below are file offset - 0x200.
  *                        Header copy and paragraph table: body 0x00E9-0x012D.
  *                        Row decoder: 0x054C-0x0575. Cell handler: 0x05C6.
- *                        See pre-OSL1.md section 11.
+ *                        See ALB.md.
  *
  * The layout was originally reversed from the corpus alone; ADLIB.EXE was only
  * found afterwards, and agrees with it exactly. Section 11.6 quotes the code.
@@ -571,7 +571,7 @@ int oldrld_load(Song *song, char *errbuf, size_t errlen)
              * name, re-interleaved. Established by cross-referencing every
              * old-format instrument against the OSL1 corpus by name: 789 pairs
              * agree on all 11 live patch bytes under this split, and none
-             * agree under any contiguous read. See pre-OSL1.md section 7. */
+             * agree under any contiguous read. See RLD.md section 7. */
             for (int b = 0; b < 8; b++) {
                 ins->adl[b]     = raw[block + 0x00 + b];
                 ins->adl[8 + b] = raw[block + 0x12 + b];
@@ -687,7 +687,7 @@ int oldrld_load(Song *song, char *errbuf, size_t errlen)
      * OPL2 patches, and opl_dev's allocator handles the extra channels. That
      * is exact for the bass drum (2-op in rhythm mode too) and an
      * approximation for the other four, which the chip drives with single
-     * operators. See pre-OSL1.md section 11.4. */
+     * operators. See ALB.md section 8. */
     blk->track_count = (uint8_t)(is_alb ? track_count + ALB_RHYTHM_SLOTS
                                         : track_count);
     blk->row_count   = OLD_ROWS_PER_PAT;

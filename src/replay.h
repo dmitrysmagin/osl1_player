@@ -83,7 +83,7 @@ typedef struct {
     uint8_t  old_format;    /* song is pre-OSL1 (B4/B6/.ALB). Selects the
                              * old effect table, in which 0x0F is Fxx
                              * set-speed rather than set-tempo, so the 50 Hz
-                             * tick is immutable. See pre-OSL1.md section 9.  */
+                             * tick is immutable. See RLD.md section 9.  */
     uint8_t  jump_pending;  /* effect 0x0B (position jump) requested        */
     uint8_t  jump_order;    /* target order index for the pending jump      */
     uint8_t  break_pending; /* effect 0x0E (pattern break) requested        */

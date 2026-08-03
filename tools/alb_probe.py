@@ -1,15 +1,15 @@
 """alb_probe - structural analysis of the 20 AD 01 ".ALB" old-format variant.
 
 Scratch tool used to reverse the *container*; kept because the correlations it
-prints are the evidence behind pre-OSL1.md section 11.2. For the cell encoding
-see alb_cells.py and pre-OSL1.md section 11.3.
+prints are the evidence behind ALB.md sections 4-6. For the cell encoding
+see alb_cells.py and ALB.md section 7.
 
 The container has since been confirmed against the driver that plays it -
 "ADLIB DRIVER (Version 3.00)", PIT/ADLIB/ADLIB.EXE - which performs exactly the
 arithmetic below: 0x158-byte header copy, n_cue from +0x11B, paragraph table of
-pattern_count + 1 u16s rounded up to a paragraph. See pre-OSL1.md section 11.6.
+pattern_count + 1 u16s rounded up to a paragraph. See ALB.md section 11.
 
-Two caveats, both documented in pre-OSL1.md section 11.2 and both deliberately
+Two caveats, both documented in ALB.md sections 4-6 and both deliberately
 left in so the raw evidence is still visible here:
 
   * this reads the paragraph table as a fixed 128 entries; it is really

@@ -12,13 +12,17 @@ clean-room re-implementation of the DOS `TRACKER.DRV` replay engine and
 > dispatches on the magic bytes, never the extension.
 
 Old-format songs are converted to the OSL1 in-memory shape at load time, so a
-single unmodified replay engine drives both. See **`pre-OSL1.md`** for the
-byte-level specification of that format and **`OSL1.md`** for the newer one.
+single unmodified replay engine drives both. There is one byte-level
+specification per format:
 
-The three old generations share a header, an order table, a slot table, the
-paragraph-addressing scheme and the note numbering, but each has its own
-dedicated DOS driver and **no driver reads more than one of them**.
-`pre-OSL1.md` sets them side by side under *"How alike are they, exactly?"*.
+| Document | Covers |
+|---|---|
+| **`OSL1.md`** | the `"OSL1"` container — 1992–93, five device targets |
+| **`RLD.md`** | pre-OSL1 `B4 9A 01` and `B6 9A 01`, the editor working files |
+| **`ALB.md`** | pre-OSL1 `20 AD 01`, the `.ALB` runtime export |
+
+The three old generations are set side by side below, under
+[The three pre-OSL1 generations](#the-three-pre-osl1-generations).
 
 > **Status:** the Adlib path is implemented and validated. Both former unknowns
 > — the compressed row decoder and the Adlib note/instrument model — are fully
@@ -71,7 +75,123 @@ block for `B6`) and falls back to the block wherever the bank is absent or
 blank, which covers 90 of the 189 `B4` files. Force one or the other to compare.
 The flag has no effect on OSL1 songs, nor on old-format `.ALB` files, which
 carry only the editor records and so have nothing to choose between.
-`pre-OSL1.md` §7.5 has the detail.
+`RLD.md` §7.5 has the detail.
+
+---
+
+## The three pre-OSL1 generations
+
+The leading magic byte is a **generation counter, not a device id** — all three
+hold OPL2 FM data. `B4` and `B6` are editor working files and share one
+specification (`RLD.md`); `20 AD 01` is a runtime export with its own
+(`ALB.md`).
+
+| | `B4 9A 01` | `B6 9A 01` | `20 AD 01` |
+|---|---|---|---|
+| Era | Jan–May 1991 | Aug 1991 – 1993 | Sep 1991 – 1992 |
+| Extension | `.RLD` | `.RLD` | `.ALB` |
+| Files in corpus | 189 (149 distinct) | 313 (297 distinct) | 22 (16 distinct) |
+| Role | editor working file | editor working file | **runtime export** |
+| Instrument slots | 32 | 64 | 32 (only the first `n_instr` live) |
+| Cue table | absent | 128 × 16 bytes at `+0x158` | `n_cue` × 16 bytes at `+0x158` |
+| Paragraph table | `+0x118`, 256 fixed entries | `+0x958`, 256 fixed entries | `+0x158 + 16·n_cue`, `pat+1` entries |
+| Pattern stream | `+0x318` | `+0xB58` | first paragraph after the table |
+| Cell coding | 2 bits/track, 0/2/2/7 bytes | same | **1 bit/slot, fixed 4 bytes** |
+| Row width | `track_count` | `track_count` | `track_count + 5` |
+| 256-byte instrument blocks | yes | yes | **none** |
+| Adlib editor bank | always present; live in 99 | present in 138, live in 17 | always, `n_instr` records |
+| Pattern break effect | `0x0D` | `0x0E` | `0x0D` |
+| Loaded by | `BSSJS/ADLIB.DRV` (Apr 1991) | `MED.EXE` / `TRACKER.DRV` (1992–93) | `PIT/ADLIB/ADLIB.EXE` v3.00 (Sep 1991) |
+
+**Each generation has its own dedicated DOS driver, and no driver reads more
+than one of them.** All three loaders `rep movsb` a fixed-size header copy out
+of the file — `0x118` bytes in `ADLIB.DRV`, `0x158` in `ADLIB.EXE` v3.00 — and
+bake in every offset they use afterwards. Neither standalone driver performs a
+magic check, and `MED.EXE` has no fallback, so the generations are mutually
+unreadable in practice even though they share most of their field layout on
+paper.
+
+### Shared by all three
+
+Verified over the whole corpus (149 `B4`, 297 `B6`, 16 `.ALB` distinct files) by
+`tools/gen_compare.py`, which reads all three through one code path wherever the
+format permits — the places it needs a branch are exactly the places the formats
+differ:
+
+* the first `0x98` bytes are the *same structure*: 3-byte magic, `char[20]` name
+  at `+0x03`, stray editor scratch byte at `+0x17`, `u8[128]` order table at
+  `+0x18`. Order length is derived the same way in all three (last non-zero
+  index + 1) and lands in the same range (2–65, 2–65, 2–55);
+* the instrument slot table at `+0x98`, `[present][volume]` pairs. The presence
+  byte is **only ever 0 or 1** in all three; an absent slot's volume is
+  **always 0** in all three; the volume ceiling is `0x40` in all three;
+* `restart_idx` immediately after `track_count`, small and always inside the
+  order;
+* paragraph addressing: `pattern_offset = para_table_off + 16 × table[i]`, with
+  entry `pattern_count` marking the end of the pattern stream. Same expression,
+  same constant — only the table's base moves;
+* 64 rows per pattern, every pattern padded to a 16-byte boundary. Decoding
+  every pattern of every distinct file — 207 085 `B4` cells, 455 067 `B6` and
+  32 493 `.ALB` — gives **0 boundary misses** in all three;
+* the cell fields and their meanings: note, **1-based** instrument selector,
+  effect command, effect parameter — and the same MOD-like effect numbering,
+  with `0x0C` set-volume dominating everywhere (15% of `B4` cells, 18% of `B6`,
+  26% of `.ALB`);
+* note numbering. `ADLIB.DRV` and `ADLIB.EXE` v3.00 hold **byte-identical
+  96-entry note tables** and both index them with `note − 0x0C`, so note 12 is
+  C-1 throughout; the same twelve F-numbers appear again in OSL1's `ADLIB.DEV`;
+* **no stored tempo and no stored speed.** All three are 50 Hz, 6 ticks/row by
+  default, overridden only by an in-pattern `Fxx`.
+
+### `B4` versus `B6` — the smallest gap
+
+They differ in *one* design decision, 32 instrument slots versus 64, plus one
+added feature:
+
+| | `B4` | `B6` |
+|---|---|---|
+| Slot table size | `0x40` bytes | `0x80` bytes |
+| Cue table | absent | 128 × 16 bytes at `+0x158` |
+| Everything after `+0x98` | shifted down `0x40` | — |
+
+The `0x800` cue table plus the `0x40` slot shift is the whole `0x840` difference
+between `+0x318` and `+0xB58`. The pattern encoding, the 256-byte instrument
+blocks, the split-patch layout and the editor bank are all bit-identical, and
+`table[0] == 32` in every one of the 446 distinct files. A `B4` reader and a
+`B6` reader differ only in two constants — which is why `RLD.md` specifies both.
+
+### `.ALB` versus the other two — a much larger, asymmetric gap
+
+It keeps the header and the paragraph arithmetic and throws away everything the
+editor needed:
+
+| | `B4`/`B6` | `.ALB` |
+|---|---|---|
+| Role | editor working file | runtime export |
+| Row encoding | 2-bit code word, 0/2/2/7-byte payloads | 16-bit presence mask, fixed 4-byte cells |
+| Row width | `track_count` | `track_count + 5` (percussion) |
+| Instrument data | 256-byte blocks **and** a 64-byte editor bank | editor records only |
+| Paragraph table | fixed 256 entries, stale tail | `pattern_count + 1`, no stale tail |
+| Cue table | fixed 128 entries, 1-based positions | `n_cue` entries, **0-based** |
+| Slot table | authoritative | stale past `n_instr` |
+| Layout | every offset fixed to `+0x318`/`+0xB58` | everything past `+0x158` is data-dependent |
+| Tail slack | 0 or 2048 (the editor bank) | **always 0** — sized exactly |
+
+Curiously `.ALB` takes its 32-slot table from `B4` but its `track_count`
+placement at `+0x118` from `B6`, leaving `+0xD8`–`+0x117` as a permanent hole
+(zero in all 16 files). It is a hybrid of the two, not a successor to either.
+
+The one deliberate *behavioural* difference is the pattern-break command:
+`0x0D` in `B4` and `.ALB`, `0x0E` in `B6`.
+
+### One difference that is not by design
+
+`B4` and `.ALB` produce **no** cell outside the legal note, selector and effect
+ranges. `B6` produces a few: **3 of its 297 distinct files** carry roughly 200
+cells with notes past 108, selectors past 64 or effect commands past `0x0F` —
+`OLDMUSIC/TUNE.RLD` and two variants of `DEMO/MOON.RLD`. They are the oldest and
+least tidy specimens in the archive, they still render, and a reader should
+**clamp rather than reject**.
 
 ---
 
@@ -88,9 +208,9 @@ future backends on the same core.
 **Known gap:** the 1991 `ADLIB.DRV` ran the OPL2 in permanent percussion mode
 (6 melodic + 5 rhythm voices). `opl_dev.c` is melodic-only, so `B4` percussion
 instruments are parsed and reported but voiced as ordinary melodic notes — 72 of
-the 189 `B4` files are affected. See `pre-OSL1.md` §10. The same gap applies to
+the 189 `B4` files are affected. See `RLD.md` §10. The same gap applies to
 the old-format `.ALB` files, whose rows reserve five explicit percussion slots
-(`pre-OSL1.md` §11.4); those are voiced melodically too, which is exact for the
+(`ALB.md` §8); those are voiced melodically too, which is exact for the
 bass drum and approximate for the other four.
 
 ## 2. How it maps onto the DOS stack
@@ -186,10 +306,10 @@ There are two cell decoders, because `.ALB` does not share the older encoding:
   position stream.
 * `decode_alb_pattern()` — `.ALB`: a `u16` presence mask, one bit per slot, with
   a fixed 4-byte cell per set bit. Rows carry `track_count + 5` slots, the last
-  five being the OPL2 percussion channels (`pre-OSL1.md` §11.3–11.4).
+  five being the OPL2 percussion channels (`ALB.md` §7–§8).
 
 Instruments come from either the 256-byte register blocks or the end-of-file
-Adlib editor bank, selected by `--fm-source` (§7.5 of `pre-OSL1.md`); `.ALB` has
+Adlib editor bank, selected by `--fm-source` (§7.5 of `RLD.md`); `.ALB` has
 only the editor records and forces that path. The editor path inverts the LEVEL
 and SUSTAIN fields on the way to the OPL2's attenuation convention, exactly as
 `ADLIB.DRV` did.
@@ -197,14 +317,14 @@ and SUSTAIN fields on the way to the OPL2's attenuation convention, exactly as
 Old songs also run a slightly different **effect table**, which `replay.c`
 selects on `Replay.old_format`: `0x0F` is ProTracker's `Fxx` *set speed* rather
 than OSL1's *set tempo*, and the 50 Hz tick is immutable because no era driver
-ever reprogrammed the PIT. See `pre-OSL1.md` §9.1 — reading `Fxx` as a tempo
+ever reprogrammed the PIT. See `RLD.md` §9.1 — reading `Fxx` as a tempo
 used to pin 417 of the 504 `B4`/`B6` files at 19 Hz. Ocean's own driver manual
 (`PIT/ADLIB/README.DOC`, 1991) says it in as many words: *"Note driver runs at
 50hz."*
 
 One known deviation remains: `B4` and `.ALB` break patterns on `0x0D`, `B6` and
 OSL1 on `0x0E`. `replay.c` currently uses `0x0E` for all formats — see
-`pre-OSL1.md` §9.1.
+`RLD.md` §9.1 and `ALB.md` §10.3.
 
 Validated across all 524 old-format files in the corpus: every one loads without
 error. Adding `.ALB` left the older paths untouched — `decode_dump` and
@@ -216,7 +336,7 @@ The `.ALB` decoder was written from the files alone, before the driver that
 plays them was found. It agrees with `ADLIB.EXE` v3.00 exactly — header copy
 length, `n_cue` placement, paragraph-table padding, MSB-first presence mask,
 fixed 4-byte cell, five trailing percussion slots, and the effect table.
-`pre-OSL1.md` §11.6 quotes the relevant code.
+`ALB.md` §6, §7 and §10 quote the relevant code.
 
 ### `replay.c` — clean-room `TRACKER.DRV`
 - Per-voice runtime cell `RVoice.b[]` (written by `decode_cell` @0x1526):
@@ -350,9 +470,9 @@ work.
 | `dro_dump.py` | DRO v2.0 → `RRR=VV` trace |
 | `dro_patches.py` | distinct operator patches at note-ons in a DRO |
 | `dro_notes.py` | note-on events (frame, channel, note) from a DRO |
-| `gen_compare.py` | side-by-side `B4`/`B6`/`.ALB` field and cell census — the evidence behind `pre-OSL1.md` *"How alike are they, exactly?"* |
-| `alb_probe.py` | `.ALB` container structure (`pre-OSL1.md` §11.2) |
-| `alb_cells.py` | `.ALB` presence-mask cell validation (`pre-OSL1.md` §11.3) |
+| `gen_compare.py` | side-by-side `B4`/`B6`/`.ALB` field and cell census — the evidence behind *"The three pre-OSL1 generations"* above |
+| `alb_probe.py` | `.ALB` container structure (`ALB.md` §4–§6) |
+| `alb_cells.py` | `.ALB` presence-mask cell validation (`ALB.md` §7) |
 | `osl1_scan.py` | magic/device census over a corpus |
 | `instr_probe.py` | instrument-record correlation between corpora |
 | `cmp_pitch.py`, `cmp_pitch_global.py`, `regcmp.py` | register/pitch trace comparison |
@@ -362,7 +482,8 @@ work.
 medplay/
 ├── README.md            this file
 ├── OSL1.md              OSL1 container specification
-├── pre-OSL1.md          B4 / B6 / .ALB specification
+├── RLD.md               pre-OSL1 B4 / B6 specification
+├── ALB.md               pre-OSL1 20 AD 01 (.ALB) specification
 ├── Makefile
 ├── src/{main,osl1,oldrld,replay,opl_dev,opl3}.{c,h}
 ├── tools/{osl1_dump,cell_dump,decode_dump,opl_scale}.c

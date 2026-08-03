@@ -22,7 +22,7 @@
  * result; their pattern encoding is bit-for-bit identical, and identical in
  * turn to OSL1's compressed position bitstream (see decode_cell() in
  * replay.c). .ALB shares the header and the paragraph-addressing scheme but
- * not the cell coding. pre-OSL1.md is the full byte-level specification.
+ * not the cell coding. RLD.md and ALB.md are the full byte-level specifications.
  *
  * Layout, with B4/B6/.ALB offsets side by side:
  *
