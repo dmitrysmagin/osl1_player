@@ -5,7 +5,7 @@
  */
 #include <stdio.h>
 #include "../src/osl1.h"
-#include "../src/oldrld.h"
+#include "../src/oldfmt.h"
 
 static void dump(const char *path)
 {
@@ -24,10 +24,10 @@ static void dump(const char *path)
     if (s.old_magic) {
         static const char *SRC[] = { "auto", "block (256-byte)", "editor (64-byte Adlib bank)" };
         printf("    format        %s, generation 0x%02X (%s)\n",
-               s.old_magic == OLDRLD_GEN_ALB ? "old .ALB" : "old .RLD",
+               s.old_magic == OLDFMT_GEN_ALB ? "old .ALB" : "old .RLD",
                s.old_magic,
                s.old_magic == 0xB4          ? "1991, 32 instrument slots"
-             : s.old_magic == OLDRLD_GEN_ALB
+             : s.old_magic == OLDFMT_GEN_ALB
                    ? "1992, runtime export, editor records only"
                    : "1991-93, 64 instrument slots");
         printf("    fm source     %s\n",
@@ -35,7 +35,7 @@ static void dump(const char *path)
         if (s.old_rhythm_instr)
             printf("    rhythm instr  %u (OPL2 percussion%s)\n",
                    s.old_rhythm_instr,
-                   s.old_magic == OLDRLD_GEN_ALB
+                   s.old_magic == OLDFMT_GEN_ALB
                        ? "; voiced melodically - see ALB.md 8"
                        : "; not voiced - see RLD.md 10");
     }
@@ -51,7 +51,7 @@ static void dump(const char *path)
         printf("    instr_table   0x%04X (%u u32 entries, records follow at 0x%04X)\n\n",
                s.instr_tab_off, s.instr_count,
                s.instr_tab_off + 4u * s.instr_count);
-    else if (s.old_magic == OLDRLD_GEN_ALB)
+    else if (s.old_magic == OLDFMT_GEN_ALB)
         printf("    instr_table   none (.ALB: %u %u-byte editor records)\n\n",
                s.instr_count, s.instr_size);
     else

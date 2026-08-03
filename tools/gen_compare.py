@@ -19,7 +19,8 @@ Walks a corpus, deduplicates by SHA-1, and reports per generation:
     record counts independently of anything parsed
 
 Row decoding is deliberately reimplemented here rather than shelled out to
-src/oldrld.c, so that agreement between the two is a real cross-check.
+src/oldrld.c and src/oldalb.c, so that agreement between them is a real
+cross-check.
 
 Usage:  python tools/gen_compare.py <root> [<root> ...]
 """

@@ -5,7 +5,9 @@
  * Python dumper osl1_dump.py on OD1.ALB, SHUTIT/TITLE.ADL and ALL.LAP.
  */
 #include "osl1.h"
+#include "oldfmt.h"
 #include "oldrld.h"
+#include "oldalb.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -106,11 +108,16 @@ int osl1_load(const char *path, Song *song, char *errbuf, size_t errlen)
 
     /* ---- header ---------------------------------------------------------- */
     if (memcmp(raw, "OSL1", 4) != 0) {
-        /* Not an OSL1 container. Some LAPMUSIC/OLDMUSIC .RLD files predate
-         * OSL1 and use a different magic (0xB6 0x9A 0x01); MED.EXE loads
-         * those via a separate, older code path - see oldrld.c. */
-        if (oldrld_is_old_format(raw, sz)) {
-            int rc = oldrld_load(song, errbuf, errlen);
+        /* Not an OSL1 container. Some LAPMUSIC/OLDMUSIC files predate OSL1 and
+         * use one of three older magics, in two families different enough to
+         * have a loader each: `B4 9A 01` / `B6 9A 01` editor working files
+         * (oldrld.c, RLD.md) and `20 AD 01` runtime exports (oldalb.c,
+         * ALB.md). Both hand back the same OSL1-shaped Song. */
+        uint8_t old_gen = oldfmt_generation(raw, sz);
+        if (old_gen) {
+            int rc = (old_gen == OLDFMT_GEN_ALB)
+                   ? oldalb_load(song, errbuf, errlen)
+                   : oldrld_load(song, errbuf, errlen);
             if (rc != 0) osl1_free(song);
             return rc;
         }

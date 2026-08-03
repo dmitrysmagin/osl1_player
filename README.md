@@ -232,8 +232,9 @@ Only `opl_dev.c` is Adlib-specific; the engine is shared by any future backend.
 
 ```
 file.adl ─► osl1.c ──┐
-                     ├─► Song{ instr[], order[], pos_ptr[], raw[] }
-file.rld ─► oldrld.c ┘   (B4/B6/.ALB are expanded into the OSL1 shape here)
+file.rld ─► oldrld.c ├─► Song{ instr[], order[], pos_ptr[], raw[] }
+file.alb ─► oldalb.c ┘   (B4/B6/.ALB are expanded into the OSL1 shape here;
+                          oldfmt.c holds what the two old loaders share)
                          │
                          ▼
             replay.c  replay_tick() @ 50 Hz
@@ -291,28 +292,41 @@ p2, `+0x0A` 20-byte name, `+0x1E` a non-Adlib device sub-record, **`+0x2E` the
 the wrong bytes — the real Adlib operator data is at `+0x2E`, confirmed
 byte-for-byte against the DRO capture.
 
-### `oldrld.c` — pre-OSL1 loader (`B4`, `B6`, `.ALB`)
+### `oldfmt.c` / `oldrld.c` / `oldalb.c` — the pre-OSL1 loaders
 
-Detects `B4 9A 01` / `B6 9A 01` / `20 AD 01`, reads the header, locates every
-pattern through the paragraph table (`para_table_off + para[i] × 16`, uniform
-across all three generations), expands the cell stream into the uncompressed
-shape `replay.c` already understands, and synthesises the `PatternBlock` fields
-the old format never stored (tempo 50, speed 6, 64 rows).
+The three old generations split two-to-one. `B4` and `B6` are editor working
+files differing only in slot count; `.ALB` is a runtime export with a different
+cell encoding, a different row width and no instrument blocks at all. So there
+are two loaders, not one, over a shared base:
 
-There are two cell decoders, because `.ALB` does not share the older encoding:
+| File | Handles |
+|---|---|
+| `oldfmt.c` | Magic detection and dispatch, the header bytes all three agree on, paragraph addressing, the 64-byte Adlib editor record, and the synthetic OSL1-shaped pattern buffer |
+| `oldrld.c` | `B4 9A 01` and `B6 9A 01` (`RLD.md`) |
+| `oldalb.c` | `20 AD 01` (`ALB.md`) |
 
-* `decode_old_pattern()` — `B4`/`B6`: a `u16` code word, 2 bits per track, with
-  variable 0/2/2/7-byte payloads. Bit-for-bit identical to OSL1's compressed
-  position stream.
-* `decode_alb_pattern()` — `.ALB`: a `u16` presence mask, one bit per slot, with
-  a fixed 4-byte cell per set bit. Rows carry `track_count + 5` slots, the last
-  five being the OPL2 percussion channels (`ALB.md` §7–§8).
+`osl1.c` calls `oldfmt_generation()` and routes to `oldrld_load()` or
+`oldalb_load()`. Either way the caller gets the same `Song`: every pattern
+located through the paragraph table (`para_table_off + para[i] × 16`, uniform
+across all three generations), expanded into the uncompressed shape `replay.c`
+already understands, plus the `PatternBlock` fields the old format never stored
+(tempo 50, speed 6, 64 rows).
+
+The two cell decoders are the clearest statement of why the split exists:
+
+* `decode_old_pattern()` in `oldrld.c` — a `u16` code word, 2 bits per track,
+  with variable 0/2/2/7-byte payloads. Bit-for-bit identical to OSL1's
+  compressed position stream.
+* `decode_alb_pattern()` in `oldalb.c` — a `u16` presence mask, one bit per
+  slot, with a fixed 4-byte cell per set bit. Rows carry `track_count + 5`
+  slots, the last five being the OPL2 percussion channels (`ALB.md` §7–§8).
 
 Instruments come from either the 256-byte register blocks or the end-of-file
 Adlib editor bank, selected by `--fm-source` (§7.5 of `RLD.md`); `.ALB` has
-only the editor records and forces that path. The editor path inverts the LEVEL
-and SUSTAIN fields on the way to the OPL2's attenuation convention, exactly as
-`ADLIB.DRV` did.
+only the editor records, so `oldalb.c` has no such choice to make. The editor
+path — shared, in `oldfmt_editor_ops_to_adl()` — inverts the LEVEL and SUSTAIN
+fields on the way to the OPL2's attenuation convention, exactly as `ADLIB.DRV`
+did.
 
 Old songs also run a slightly different **effect table**, which `replay.c`
 selects on `Replay.old_format`: `0x0F` is ProTracker's `Fxx` *set speed* rather
@@ -326,17 +340,27 @@ One known deviation remains: `B4` and `.ALB` break patterns on `0x0D`, `B6` and
 OSL1 on `0x0E`. `replay.c` currently uses `0x0E` for all formats — see
 `RLD.md` §9.1 and `ALB.md` §10.3.
 
-Validated across all 524 old-format files in the corpus: every one loads without
-error. Adding `.ALB` left the older paths untouched — `decode_dump` and
-`osl1_dump` output is byte-identical to the previous build on all 190 `B4` and
-all 314 `B6` files in `test/`, and every `.ALB` renders with healthy amplitude
-(peak 4087–25117, no silent file).
+Validated across all 524 old-format files in the corpus (189 `B4`, 313 `B6`,
+22 `.ALB`): every one loads without error, and both `osl1_dump` and
+`decode_dump` produce byte-identical output to the pre-split single-loader
+build on every one of them. Every `.ALB` renders with healthy amplitude (peak
+4087–25117, no silent file).
 
 The `.ALB` decoder was written from the files alone, before the driver that
 plays them was found. It agrees with `ADLIB.EXE` v3.00 exactly — header copy
 length, `n_cue` placement, paragraph-table padding, MSB-first presence mask,
 fixed 4-byte cell, five trailing percussion slots, and the effect table.
 `ALB.md` §6, §7 and §10 quote the relevant code.
+
+That driver is now annotated in full at `../PIT_ADLIB.EXE.annotated.asm`. It
+shipped with its Borland debug block attached, so the listing carries the
+author's own 245 `ADLIB.ASM` label names and 1185 source-line numbers. Two
+corrections to earlier readings came out of it, both recorded in `ALB.md`: the
+per-row and per-tick effect tables had been transposed (§10.1), and v3.00 is
+**not** `BSSJS/ADLIB.DRV` rebuilt — filtered for non-trivial runs the two share
+only 15% of their bytes, essentially just the note table and the OPL2 register
+writer, and v3.00 has none of the older driver's 272 branch-padding `nop`s
+(§11). Same design, same author, separately written.
 
 ### `replay.c` — clean-room `TRACKER.DRV`
 - Per-voice runtime cell `RVoice.b[]` (written by `decode_cell` @0x1526):
@@ -485,7 +509,8 @@ medplay/
 ├── RLD.md               pre-OSL1 B4 / B6 specification
 ├── ALB.md               pre-OSL1 20 AD 01 (.ALB) specification
 ├── Makefile
-├── src/{main,osl1,oldrld,replay,opl_dev,opl3}.{c,h}
+├── src/{main,osl1,replay,opl_dev,opl3}.{c,h}
+│   └── {oldfmt,oldrld,oldalb}.{c,h}                 pre-OSL1 loaders
 ├── tools/{osl1_dump,cell_dump,decode_dump,opl_scale}.c
 │         {dro_dump,dro_patches,dro_notes}.py          DRO capture analysis
 │         {gen_compare,alb_probe,alb_cells}.py         pre-OSL1 format analysis

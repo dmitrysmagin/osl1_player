@@ -35,18 +35,20 @@ CFLAGS  = $(OPT) $(CSTD) $(WARN) $(SDL_CFLAGS)
 LDLIBS  = $(SDL_LIBS)
 
 BIN  = medplay.exe
-SRC  = src/main.c src/opl3.c src/opl_dev.c src/osl1.c src/oldrld.c src/replay.c
+SRC  = src/main.c src/opl3.c src/opl_dev.c src/osl1.c \
+       src/oldfmt.c src/oldrld.c src/oldalb.c src/replay.c
 OBJ  = $(SRC:.c=.o)
 
 # All project headers. Every object depends on all of them: a coarse but safe
 # rule so a struct-layout change (e.g. adding a field to opl_dev) forces every
 # translation unit to recompile. Without this a stale object built against the
 # old layout links against the new one and corrupts memory at run time.
-HDR  = src/opl3.h src/opl_dev.h src/osl1.h src/oldrld.h src/replay.h
+HDR  = src/opl3.h src/opl_dev.h src/osl1.h \
+       src/oldfmt.h src/oldrld.h src/oldalb.h src/replay.h
 
-# Parser parity tool (no SDL needed): tools/osl1_dump.c + src/osl1.c + src/oldrld.c
+# Parser parity tool (no SDL needed): the loaders only, no audio backend.
 DUMP_BIN = osl1_dump.exe
-DUMP_SRC = tools/osl1_dump.c src/osl1.c src/oldrld.c
+DUMP_SRC = tools/osl1_dump.c src/osl1.c src/oldfmt.c src/oldrld.c src/oldalb.c
 
 all: $(BIN)
 
@@ -72,7 +74,8 @@ scale: $(SCALE_BIN)
 
 # decode_dump: headless replay-decoder validation (osl1 + replay + opl_dev + opl3, no SDL).
 DECODE_BIN = decode_dump.exe
-DECODE_SRC = tools/decode_dump.c src/osl1.c src/oldrld.c src/replay.c src/opl_dev.c src/opl3.c
+DECODE_SRC = tools/decode_dump.c src/osl1.c src/oldfmt.c src/oldrld.c src/oldalb.c \
+             src/replay.c src/opl_dev.c src/opl3.c
 $(DECODE_BIN): $(DECODE_SRC)
 	$(CC) $(OPT) $(CSTD) $(WARN) $^ -o $@
 

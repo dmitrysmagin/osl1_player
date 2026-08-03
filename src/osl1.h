@@ -96,7 +96,7 @@ typedef struct {
                              * completeness/display only; 0 across the corpus. */
     int      fm;            /* has a usable OPL2 FM patch at +0x2E    */
 
-    /* ---- old-format .RLD only (see oldrld.c); 0 for OSL1 files ---------- */
+    /* ---- old formats only (see oldrld.c / oldalb.c); 0 for OSL1 -------- */
     uint8_t  def_volume;    /* default level 0..0x7F from the slot table's
                              * volume byte, doubled from its stored 0..0x3F.
                              * Both era drivers apply this at note-on:
@@ -132,7 +132,7 @@ typedef struct {
     /* Old-format .RLD generation byte: 0xB4 (1991) or 0xB6 (1991-93), or 0
      * for a real OSL1 container. Chronological, not device-specific. */
     uint8_t      old_magic;
-    /* Which instrument source actually supplied the patches (OldrldFmSource,
+    /* Which instrument source actually supplied the patches (OldFmtFmSource,
      * resolved from AUTO). Meaningful only when old_magic != 0. */
     uint8_t      old_fm_source;
     uint16_t     old_rhythm_instr;  /* old-format instruments with rhythm != 0 */
@@ -152,8 +152,9 @@ typedef struct {
      * This field used to be read as an "instr_size" from 0x4E, which is in
      * fact the low half of table entry 0. That made the whole table read one
      * entry late and silently discarded instrument 0 of every song - see the
-     * note in osl1.c. Kept as a struct field because oldrld.c reports a real
-     * fixed record size for the old format. */
+     * note in osl1.c. Kept as a struct field because the old-format loaders
+     * report a real fixed record size (256 for a B4/B6 instrument block,
+     * 64 for an .ALB editor record). */
     uint16_t     instr_tab_off; /* OSL1: 0x4E. Old-format .RLD: 0.    */
     uint16_t     instr_size;    /* record span used for bounds checks */
 

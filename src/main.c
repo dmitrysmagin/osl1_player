@@ -492,9 +492,9 @@ int main(int argc, char **argv)
         else if (!strcmp(a, "--scale"))                 scale_mode = 1;
         else if (!strcmp(a, "--fm-source") && i + 1 < argc) {
             const char *s = argv[++i];
-            if      (!strcmp(s, "auto"))   oldrld_set_fm_source(OLDRLD_FM_AUTO);
-            else if (!strcmp(s, "block"))  oldrld_set_fm_source(OLDRLD_FM_BLOCK);
-            else if (!strcmp(s, "editor")) oldrld_set_fm_source(OLDRLD_FM_EDITOR);
+            if      (!strcmp(s, "auto"))   oldrld_set_fm_source(OLDFMT_FM_AUTO);
+            else if (!strcmp(s, "block"))  oldrld_set_fm_source(OLDFMT_FM_BLOCK);
+            else if (!strcmp(s, "editor")) oldrld_set_fm_source(OLDFMT_FM_EDITOR);
             else { fprintf(stderr, "--fm-source: expected auto|block|editor\n"); return 2; }
         }
         else if (a[0] == '-') { fprintf(stderr, "unknown option: %s\n", a); usage(); return 2; }

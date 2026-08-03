@@ -81,9 +81,9 @@ they share most of their field layout on paper.
 
 `MED.EXE` accepts `B6` only: its magic test at `med.asm:0x2364` is a bare
 `cmpw $0x9ab6` with no fallback, so the `B3`/`B4`/`B5` and `.ALB` files cannot
-be opened in the editor at all. `src/oldrld.c` reads `B4`, `B6` and `.ALB` — all
-524 files load cleanly — while `B3` (1 file) and `B5` (2 files) remain unhandled
-for want of specimens.
+be opened in the editor at all. `src/oldrld.c` reads `B4` and `B6`, and its
+sibling `src/oldalb.c` reads `.ALB` — all 524 files load cleanly — while `B3`
+(1 file) and `B5` (2 files) remain unhandled for want of specimens.
 
 > **`.RLD` is a filename convention, not a format marker.** 109 files carrying
 > the extension are ordinary OSL1 containers, and two are a plain text file.
@@ -223,8 +223,9 @@ immediately before the same code path that an inline `0Ch` effect would take.
 A `0Ch` (set volume) riding on the same row therefore **overrides** the default
 rather than scaling it.
 
-`src/oldrld.c` parses this into `Instrument.def_volume` and `src/replay.c`
-applies it at note-on, preferring an explicit `0Ch` when one is present.
+`oldfmt_classify_instrument()` parses this into `Instrument.def_volume` and
+`src/replay.c` applies it at note-on, preferring an explicit `0Ch` when one is
+present.
 
 ---
 
@@ -551,7 +552,8 @@ for op in (mod, car):
 adl[10] = (mod.FEEDBACK & 7) << 1        ; connection bit forced to 0
 ```
 
-`src/oldrld.c` implements this as `editor_ops_to_adl()`.
+`src/oldfmt.c` implements this as `oldfmt_editor_ops_to_adl()`, shared with the
+`.ALB` loader, which uses the same record.
 
 ### 7.5 Which instrument source to use
 
@@ -608,7 +610,7 @@ expected and must not be treated as a truncation error either.
 ## 9. What the loader supplies
 
 Because the old format stores no timing at all, `MED.EXE`'s loader fills in
-fixed values (`med.asm` `0x2374`), and `oldrld.c` mirrors them:
+fixed values (`med.asm` `0x2374`), and `oldfmt_commit()` mirrors them:
 
 | Field       | Value | Source                                        |
 |-------------|-------|-----------------------------------------------|
@@ -632,7 +634,7 @@ one. Tempo is 50 Hz for the entire run, in all three generations.
 > API manual for the sibling `.ALB` driver (`ALB.md` §11) — states it outright
 > under the initialisation instructions: **"Note driver runs at 50hz."** The
 > binary backs the sentence up with a literal: `mov ax,0x5D37` immediately
-> before the PIT write, and 1 193 182 / 23863 = 50.0016 Hz. Nothing else in
+> before the PIT write, and 1 193 182 / 23863 = 50.0013 Hz. Nothing else in
 > either driver writes the timer. Both the rate and its immutability are
 > therefore documented by the authors rather than merely inferred from
 > disassembly, and the 50 in `oldrld.c` is not a fallback but the specification.
@@ -741,7 +743,7 @@ the melodic path at all.
   percentage scale and are leftover scratch, not rhythm codes.
 
 The driver's own dispatch only recognises 6–10. Accept that range and treat
-everything else as melodic — which is what `src/oldrld.c` now does. With the
+everything else as melodic — which is what `oldfmt_rhythm_code()` does. With the
 check in place the corpus counts are **72 B4 files and 12 B6 files** containing
 at least one percussion instrument; without it, nearly every file appeared to.
 
@@ -869,8 +871,10 @@ entirely. Each has its own standalone driver: the `B4` ones belong to
 `MEDIT/LAPMUSIC/OLDMUSIC/BSSJS/ADLIB.DRV` (April 1991), annotated in full at
 `../BSSJS_ADLIB.DRV.annotated.asm`; the `.ALB` ones to
 `MEDIT/LAPMUSIC/OLDMUSIC/OLDMUSIC/PIT/ADLIB/ADLIB.EXE` (v3.00, September 1991),
-which arrives with its API manual, its MASM test harnesses and their source
-(`ALB.md` §11).
+annotated in full at `../PIT_ADLIB.EXE.annotated.asm`, which arrives with its API
+manual, its MASM test harnesses and their source — and, alone among the drivers
+examined here, with its Borland debug block still attached, so the listing carries
+the author's own label names and `ADLIB.ASM` line numbers (`ALB.md` §11).
 
 See `../RE-REPORT.md` §11.1b for the evidence that the generation byte tracks
 *date* rather than target device, and §11.3 for the editor-record derivation.
