@@ -180,7 +180,14 @@ uint8_t oldfmt_rhythm_code(uint8_t raw_field)
     return (raw_field >= 6 && raw_field <= 10) ? raw_field : 0;
 }
 
-int oldfmt_classify_instrument(Instrument *ins, uint8_t slot_volume)
+int oldfmt_mt32_sig(const uint8_t *p8)
+{
+    return p8[0] <= 3 && p8[2] <= 48 && p8[3] <= 100 &&
+           p8[4] <= 24 && p8[5] <= 3 && p8[6] <= 1;
+}
+
+int oldfmt_classify_instrument(Instrument *ins, uint8_t slot_volume,
+                               uint8_t device)
 {
     /* Default level: the slot table stores 0..0x40 (0..64, an editor
      * percentage-style scale - the corpus maximum is exactly 64 in all three
@@ -190,15 +197,26 @@ int oldfmt_classify_instrument(Instrument *ins, uint8_t slot_volume)
     int v = slot_volume * 2;
     ins->def_volume = (uint8_t)(v > 0x7F ? 0x7F : v);
 
-    ins->synth     = OSL1_SYNTH_FM_SHORT;
+    ins->synth     = device;
     ins->program   = 0;
     ins->transpose = 0;
     ins->finetune  = 0;
 
-    int fm_nz = 0;
-    for (int b = 0; b < 11; b++)
-        if (ins->adl[b]) fm_nz++;
-    ins->fm    = (fm_nz >= 4);
+    if (device == OSL1_SYNTH_FM) {
+        /* An FM patch still has to carry real operator data: a file authored
+         * for another device leaves the FM bytes as unused leftovers. */
+        int fm_nz = 0;
+        for (int b = 0; b < 11; b++)
+            if (ins->adl[b]) fm_nz++;
+        ins->fm = (fm_nz >= 4);
+    } else {
+        ins->fm = 0;   /* Roland/other: the OPL2 cannot voice it */
+    }
+
+    /* Silence anything not playable on the OPL2 so its bytes are never voiced
+     * as registers (the JINGLE bug: MT-32 timbre data read as OPL2 garbage). */
+    if (!ins->fm) memset(ins->adl, 0, sizeof(ins->adl));
+
     ins->valid = 1;
     return ins->fm;
 }

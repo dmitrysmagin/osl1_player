@@ -209,12 +209,30 @@ int oldrld_load(Song *song, char *errbuf, size_t errlen)
         }
     }
 
-    /* Resolve AUTO to the source the era's own driver used. */
+    /* Resolve AUTO to the source the era's own Adlib driver used: the editor
+     * bank whenever the file carries a live one, the 256-byte blocks otherwise.
+     * This is what ADLIB.DRV does (it voices exclusively from the editor bank),
+     * and it now applies to B6 as well as B4 - the 17 B6 files with a live bank
+     * are dual-target exports whose blocks hold Roland MT-32 data but whose bank
+     * holds the equivalent Adlib patches, so the bank is the right OPL2 source.
+     * A blank bank (Roland-only file) leaves the blocks as the only data. */
     OldFmtFmSource src = g_fm_source;
     if (src == OLDFMT_FM_AUTO)
-        src = (gen == 0xB4) ? OLDFMT_FM_EDITOR : OLDFMT_FM_BLOCK;
+        src = fmbank_named ? OLDFMT_FM_EDITOR : OLDFMT_FM_BLOCK;
     if (src == OLDFMT_FM_EDITOR && !fmbank_named)
         src = OLDFMT_FM_BLOCK;      /* nothing to read; fall back */
+
+    /* Silence Roland blocks only when the source was resolved automatically.
+     * An explicit `--fm-source block` means "voice every block on the OPL2 for
+     * A/B comparison", so it must keep the old blocks-as-OPL2 behaviour intact.
+     *
+     * MED.EXE's B6 loader (med.asm 0x25DC-0x26F2) tags every block device 4 and
+     * reshapes it into a 244-byte MT-32 dump, so a Roland-shaped block reached
+     * only through the BLOCK source (a blank-bank file) is genuinely Roland data
+     * and must not reach the OPL2. Per-instrument rather than per-generation: B4
+     * blocks are mostly real OPL2 (only 19.7% pass the MT-32 signature) while B6
+     * blocks are mostly Roland (68.9% pass). */
+    int allow_roland = (g_fm_source == OLDFMT_FM_AUTO);
 
     /* ---- build the instrument table --------------------------------------
      * One entry per slot, present or not, so pattern instrument selectors
@@ -234,6 +252,7 @@ int oldrld_load(Song *song, char *errbuf, size_t errlen)
 
         ins->offset = (uint32_t)block;
         ins->len    = OLD_INSTR_BLOCK_SIZE;
+        size_t blk0 = block;      /* block base, before the += below */
 
         /* --- the 256-byte block ---
          * The 16-byte OPL2 patch is NOT contiguous here: the 10-byte name is
@@ -259,6 +278,12 @@ int oldrld_load(Song *song, char *errbuf, size_t errlen)
         oldfmt_str(raw, block + 0x08, sz, ins->name, 10);
         block += OLD_INSTR_BLOCK_SIZE;
 
+        /* Does this block hold Roland MT-32 data rather than an OPL2 patch?
+         * Only meaningful for the BLOCK source: an EDITOR-source file rebuilds
+         * adl[] from real Adlib fields below and is FM by construction. */
+        int roland_block = allow_roland && src == OLDFMT_FM_BLOCK &&
+                           blk0 + 8 <= sz && oldfmt_mt32_sig(raw + blk0);
+
         /* --- the 64-byte editor record, if this file has a LIVE bank ---
          *
          * Guard on fmbank_named, not merely on fmbank_off. A blank bank is
@@ -281,7 +306,8 @@ int oldrld_load(Song *song, char *errbuf, size_t errlen)
             }
         }
 
-        if (oldfmt_classify_instrument(ins, slot_volume[i])) fm_count++;
+        uint8_t device = roland_block ? OSL1_SYNTH_ROLAND : OSL1_SYNTH_FM;
+        if (oldfmt_classify_instrument(ins, slot_volume[i], device)) fm_count++;
         else midi_count++;
         valid_count++;
     }

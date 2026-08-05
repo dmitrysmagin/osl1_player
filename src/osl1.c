@@ -83,6 +83,119 @@ static int fail(char *errbuf, size_t errlen, const char *msg)
     return -1;
 }
 
+/* ---- instrument records are containers of per-device variants ------------
+ *
+ * MED.EXE builds one of these by hand when it imports an old-format .RLD
+ * (med.asm 0x25DC-0x26F2), which pins every field and every constant:
+ *
+ *   +0x00  u32  record length, EXCLUDING this field
+ *   +0x04  u16  n_variants                        (med.asm 0x26BC writes 1)
+ *   +0x06  u16  offset of variant 0, from +0x04   (0x26C1 writes 6)
+ *   +0x08  u16  0                                 (0x26C7 writes 0)
+ *   ...         n_variants-1 further 4-byte descriptors; the only multi-variant
+ *               records in the corpus all carry `02 00 12 00` here, too small a
+ *               sample to reverse, and nothing needs it - the variants are
+ *               contiguous, so walking payload lengths finds them all.
+ *   variants[], contiguous, each:
+ *     +0x00  char[20] name                (0x2641 copies 10 bytes, pads 10)
+ *     +0x14  u16      0xFFFF              (0x2653)
+ *     +0x16  s8       finetune
+ *     +0x18  s8       transpose           (TRACKER.DRV:10CD  es:[di+0x18])
+ *     +0x19  u8       volume ceiling      (TRACKER.DRV:1236  es:[di+0x19])
+ *     +0x1A  u8       device code         (0x266B writes 4 = Roland)
+ *     +0x20  u32      payload length      (0x2685 writes 244 = MT-32 timbre)
+ *     +0x24  payload  <- exactly the pointer D_InstInit gets (ADLIB.DEV:48)
+ *
+ * The drivers' own base pointer is the VARIANT, not the record: TRACKER.DRV
+ * 0x15E1 does `add di,6` right after fetching the record. So record-relative
+ * offsets are variant-relative plus 6, and for a single-variant record that
+ * gives transpose at +0x22, the device code at +0x24 and the payload at +0x2E
+ * - the three offsets medplay used to hard-code.
+ *
+ * Hard-coding them silently assumed one variant of one device. Walking the
+ * chain instead finds the OPL2 variant when a record carries several, and far
+ * more importantly notices when the record has no OPL2 variant at all.
+ * Verified against the corpus: 6750 of 6757 records chain to exactly their
+ * stated length (the 7 that do not are .SNS sample banks). */
+#define VAR_FINETUNE   0x16
+#define VAR_TRANSPOSE  0x18
+#define VAR_SYNTH      0x1A
+#define VAR_PAYLEN     0x20
+#define VAR_HDR        0x24   /* bytes of variant header before the payload */
+
+/* Is this device code one whose payload layout we know? Anything else means we
+ * have mis-parsed, and the caller falls back to the pre-variant heuristic. */
+static int known_device(uint8_t syn)
+{
+    return syn == OSL1_SYNTH_FM   || syn == OSL1_SYNTH_ROLAND ||
+           syn == OSL1_SYNTH_SCC1 || syn == OSL1_SYNTH_SNES;
+}
+
+static void parse_instr_record(const uint8_t *raw, size_t sz,
+                               size_t rec, Instrument *ins)
+{
+    ins->len = rd_u16(raw, rec, sz);
+    ins->p1  = rd_u16(raw, rec + 0x04, sz);   /* n_variants        */
+    ins->p2  = rd_u16(raw, rec + 0x06, sz);   /* descriptor 0, low */
+
+    unsigned n = ins->p1;
+    if (n < 1 || n > 8) n = 1;      /* nonsense count: read it as one variant */
+    ins->n_variants = (uint8_t)n;
+
+    /* Walk the chain, preferring an OPL2 variant over anything else. */
+    size_t   var      = rec + 4 + 2 + 4 * (size_t)n;
+    size_t   pick     = 0;
+    uint8_t  pick_syn = 0;
+    uint32_t pick_len = 0;
+
+    for (unsigned v = 0; v < n; v++) {
+        if (var + VAR_HDR > sz) break;
+        uint8_t  syn = raw[var + VAR_SYNTH];
+        uint32_t pl  = rd_u32(raw, var + VAR_PAYLEN, sz);
+
+        if (!pick || (syn == OSL1_SYNTH_FM && pick_syn != OSL1_SYNTH_FM)) {
+            pick = var; pick_syn = syn; pick_len = pl;
+        }
+        if (pl > sz || var + VAR_HDR + pl > sz) break;   /* chain broken */
+        var += VAR_HDR + pl;
+    }
+
+    if (!pick) {                     /* record does not even hold a header */
+        ins->name[0] = '\0';
+        ins->fm = 0;
+        return;
+    }
+
+    rd_str(raw, pick, sz, ins->name, 20);
+    ins->finetune    = (pick + VAR_FINETUNE  < sz) ? (int8_t)raw[pick + VAR_FINETUNE]  : 0;
+    ins->transpose   = (pick + VAR_TRANSPOSE < sz) ? (int8_t)raw[pick + VAR_TRANSPOSE] : 0;
+    ins->synth       = pick_syn;
+    ins->paylen      = pick_len;
+    ins->payload_off = (uint32_t)(pick + VAR_HDR);
+
+    size_t pay = pick + VAR_HDR;
+    for (int b = 0; b < 16; b++) {
+        size_t db = pay + (size_t)b;
+        ins->adl[b] = (db < sz) ? raw[db] : 0;
+    }
+
+    if (known_device(pick_syn)) {
+        /* The device code IS the answer; no guessing from the payload bytes.
+         * Only an Adlib variant leaves a usable OPL2 patch in adl[]. */
+        ins->fm = (pick_syn == OSL1_SYNTH_FM);
+    } else {
+        /* Unrecognised code: we are probably looking at a non-song file. Fall
+         * back to the old "does this look like operator data" probe rather
+         * than silently muting whatever it is. */
+        int nz = 0;
+        for (int b = 0; b < 11; b++) if (ins->adl[b]) nz++;
+        ins->fm = (nz >= 4);
+    }
+
+    if (!ins->fm) memset(ins->adl, 0, sizeof(ins->adl));
+    ins->program = (pick_syn == OSL1_SYNTH_SCC1 && pay + 2 < sz) ? raw[pay + 2] : 0;
+}
+
 int osl1_load(const char *path, Song *song, char *errbuf, size_t errlen)
 {
     memset(song, 0, sizeof(*song));
@@ -176,46 +289,11 @@ int osl1_load(const char *path, Song *song, char *errbuf, size_t errlen)
 
         ins->valid = ok;
         if (ok) {
-            ins->len = rd_u16(raw, w1, sz);
-            ins->p1  = rd_u16(raw, (size_t)w1 + 4, sz);
-            ins->p2  = rd_u16(raw, (size_t)w1 + 6, sz);
-            rd_str(raw, (size_t)w1 + 0x0A, sz, ins->name, 20);
-            /* Adlib device patch lives at record +0x2E (16 bytes). Verified
-             * against ADLIB.DEV's operator programmer (0xD69) and the DRO
-             * capture: the 16 bytes are mod 0x20/40/60/80/E0 (b0-4), carrier
-             * 0x20/40/60/80/E0 (b5-9), 0xC0 (b10). The +0x1E block is a
-             * different (non-Adlib) device sub-record. */
-            for (int b = 0; b < 16; b++) {
-                size_t db = (size_t)w1 + 0x2E + b;
-                ins->adl[b] = (db < sz) ? raw[db] : 0;
-            }
-
-            /* ---- heuristic synth/renderability probe -------------------- *
-             * +0x24 is a per-instrument synth-type code (2/4 = OPL2 FM,
-             * 8 = MIDI/program). The decisive, robust signal is whether the
-             * 11-byte OPL2 patch at +0x2E carries real operator data: FM
-             * patches have ~7-9 non-zero bytes, MIDI/program records have 0-1
-             * (just a GM program number at +0x30). Threshold of 4 cleanly
-             * separates the two across the whole corpus. */
-            ins->synth   = ((size_t)w1 + 0x24 < sz) ? raw[w1 + 0x24] : 0;
-            ins->program = ((size_t)w1 + 0x30 < sz) ? raw[w1 + 0x30] : 0;
-            /* +0x22 is a signed per-instrument note transpose in semitones
-             * (e.g. COLUMBIA.ADL LOGDRUM1 = -24, "saw synth" = +12). The DOS
-             * driver adds it to the pattern note before the OPL note->fnum/
-             * block conversion; without it the drum kit plays two octaves high. */
-            ins->transpose = ((size_t)w1 + 0x22 < sz) ? (int8_t)raw[w1 + 0x22] : 0;
-            /* +0x20 is the per-instrument "FineTune" editor field (a signed
-             * byte, MED.EXE editor range -99..+99), separate from the +0x22
-             * transpose. It is deliberately NOT applied to pitch: both replay
-             * drivers quantise pitch to whole semitones from the note number
-             * (ADLIB.DEV note-on -> fixed fnum table @0x3B5 with the period
-             * forced to 0x2000; SBLAST.DEV DoNoteOn -> rate from FreqTable),
-             * so FineTune has no effect on playback. Parsed for display only. */
-            ins->finetune = ((size_t)w1 + 0x20 < sz) ? (int8_t)raw[w1 + 0x20] : 0;
-            int fm_nz = 0;
-            for (int b = 0; b < 11; b++)
-                if (ins->adl[b]) fm_nz++;
-            ins->fm = (fm_nz >= 4);
+            /* Parse the record as a chain of per-device variants and pick the
+             * OPL2 one if present (parse_instr_record above). This replaces the
+             * old fixed-offset read that silently assumed one Adlib variant and
+             * so mis-classified every Roland/SCC1-only record as playable FM. */
+            parse_instr_record(raw, sz, w1, ins);
             if (ins->fm) song->fm_instr++;
             else         song->midi_instr++;
 

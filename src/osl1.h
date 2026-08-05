@@ -48,12 +48,31 @@ typedef enum {
     OSL1_DEV_SNES        /* Super Nintendo S-DSP (FIR filter + echo)          */
 } Osl1Device;
 
-/* Per-instrument synth-type code at record +0x24. This DOES reliably describe
- * how the instrument is voiced (verified across the corpus). */
+/* Per-instrument synth-type code, at variant +0x1A (= record +0x24 when the
+ * record holds a single variant). It is the DEVICE NUMBER the instrument was
+ * authored for - the same enum as `D_DEVICENUMBER` at offset 0 of every .DEV
+ * (LAPC1.DEV.annotated.asm:29) - and it fixes the payload length exactly.
+ * Verified on 6750 of the corpus's 6757 records (the 7 exceptions are .SNS
+ * sample banks, whose payload really is variable):
+ *
+ *   code  device                payload  records
+ *   0x02  Adlib / OPL2           16       734
+ *   0x04  Roland LAPC-1 / MT-32  244     4953
+ *   0x08  Roland SCC-1 / GS      128     1033
+ *   0x81  SNES S-DSP sample      varies    35
+ *
+ * `0x04` used to be documented here as "FM-ext", a 286-byte FM record with a
+ * 228-byte editor tail. That was wrong, and it is why every Roland song was
+ * voiced with nonsense: the 244-byte payload is an MT-32 timbre dump - 8 bytes
+ * of Patch Memory, 4 of Timbre Common, then 4 x 58-byte partials - which
+ * LAPC1.DEV uploads over SysEx (LAPC1.DEV.annotated.asm:775-904). Reading its
+ * first 11 bytes as an OPL2 patch yields a full-level modulator and a carrier
+ * that never decays. See OSL1.md section 6. */
 enum {
-    OSL1_SYNTH_FM_SHORT = 0x02,  /* 58-byte record: one 11-byte OPL2 patch    */
-    OSL1_SYNTH_FM_EXT   = 0x04,  /* 286-byte MED-native record: FM + params   */
-    OSL1_SYNTH_MIDI     = 0x08   /* 170-byte record: GM program, no FM data   */
+    OSL1_SYNTH_FM     = 0x02,  /* Adlib / OPL2: 16-byte payload, 11 live     */
+    OSL1_SYNTH_ROLAND = 0x04,  /* LAPC-1 / MT-32: 244-byte timbre dump       */
+    OSL1_SYNTH_SCC1   = 0x08,  /* SCC-1 / GS: 128-byte payload, GM prog @+2  */
+    OSL1_SYNTH_SNES   = 0x81   /* SNES S-DSP sample (.SNS banks only)        */
 };
 
 /* Heuristic renderability classification derived from the instrument mix.
@@ -63,8 +82,8 @@ enum {
 typedef enum {
     OSL1_KIND_UNKNOWN = 0,  /* no valid instruments                          */
     OSL1_KIND_ADLIB,        /* every valid instrument has an OPL2 FM patch    */
-    OSL1_KIND_MIXED,        /* mix of FM and MIDI/program instruments         */
-    OSL1_KIND_MIDI          /* only MIDI/program instruments (no FM) -> mute  */
+    OSL1_KIND_MIXED,        /* some OPL2, some Roland/SCC1 -> partly playable */
+    OSL1_KIND_MIDI          /* no OPL2 patch anywhere -> nothing to render    */
 } Osl1Kind;
 
 /* File offset of the instrument pointer table: `instr_count` file-absolute
@@ -82,19 +101,25 @@ typedef struct {
     uint16_t len;           /* +0x00 total instrument data length     */
     uint16_t p1;            /* +0x04 param 1 (const 1 across corpus)  */
     uint16_t p2;            /* +0x06 param 2 (const 6 across corpus)  */
-    char     name[21];      /* +0x0A 20-byte null-padded name         */
-    uint8_t  adl[16];       /* +0x2E OPL2 ADL patch (11 bytes used)   */
-    uint8_t  synth;         /* +0x24 synth-type code (see OSL1_SYNTH_*)*/
-    uint8_t  program;       /* +0x30 GM program (valid when !fm)      */
-    int8_t   transpose;     /* +0x22 signed per-instrument transpose  */
-    int8_t   finetune;      /* +0x20 signed "FineTune" editor field
+    char     name[21];      /* variant +0x00, 20-byte null-padded name */
+    uint8_t  adl[16];       /* the OPL2 payload, zeroed when there is none */
+    uint8_t  synth;         /* device code of the SELECTED variant     */
+    uint8_t  n_variants;    /* record +0x04; >1 in only 5 corpus records */
+    uint32_t paylen;        /* selected variant's payload length       */
+    uint32_t payload_off;   /* file offset of that payload (0 = none)  */
+    uint8_t  program;       /* payload +0x02 GM program (SCC1 records) */
+    int8_t   transpose;     /* variant +0x18 signed transpose          */
+    int8_t   finetune;      /* variant +0x16 signed "FineTune" field
                              * (range -99..+99). Distinct from transpose.
                              * NOT applied to pitch: every OSL replay driver
                              * (ADLIB.DEV, SBLAST.DEV) derives pitch from the
                              * note number via a fixed 12-per-octave table, so
                              * finetune has no runtime effect. Parsed for
                              * completeness/display only; 0 across the corpus. */
-    int      fm;            /* has a usable OPL2 FM patch at +0x2E    */
+    int      fm;            /* the record has an OPL2 (device 0x02) variant,
+                             * i.e. adl[] is a real patch and this instrument
+                             * can be rendered. Roland/SCC1-only instruments
+                             * are 0 and must stay silent. */
 
     /* ---- old formats only (see oldrld.c / oldalb.c); 0 for OSL1 -------- */
     uint8_t  def_volume;    /* default level 0..0x7F from the slot table's

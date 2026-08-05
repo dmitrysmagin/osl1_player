@@ -58,14 +58,17 @@ static int opl3_needed(const Song *song)
     return song->blk.track_count > 9;
 }
 
-/* Human-readable name for the per-instrument synth-type code (record +0x24). */
+/* Human-readable name for the per-variant OSL device code (variant +0x1A).
+ * These are the OSL D_DEVICENUMBER values, not FM sub-types: 0x04 is a Roland
+ * MT-32/LAPC-1 timbre dump, which earlier builds mislabelled "FM-ext". */
 static const char *synth_name(uint8_t syn)
 {
     switch (syn) {
-        case OSL1_SYNTH_FM_SHORT: return "FM-short";
-        case OSL1_SYNTH_FM_EXT:   return "FM-ext";
-        case OSL1_SYNTH_MIDI:     return "MIDI";
-        default:                  return "?";
+        case OSL1_SYNTH_FM:     return "Adlib";
+        case OSL1_SYNTH_ROLAND: return "Roland";
+        case OSL1_SYNTH_SCC1:   return "SCC-1";
+        case OSL1_SYNTH_SNES:   return "SNES";
+        default:                return "?";
     }
 }
 
@@ -83,9 +86,9 @@ static void print_instruments(const Song *song)
             printf("  *%-2u  (invalid)\n", i);
             continue;
         }
-        printf("   %-2u  syn=0x%02X %-8s %-4s  %-20s", i, in->synth,
-               synth_name(in->synth), in->fm ? "FM" : "MIDI", in->name);
-        if (!in->fm) printf("  GM prog %u", in->program);
+        printf("   %-2u  syn=0x%02X %-7s %-6s  %-20s", i, in->synth,
+               synth_name(in->synth), in->fm ? "OPL2" : "silent", in->name);
+        if (in->synth == OSL1_SYNTH_SCC1) printf("  GM prog %u", in->program);
         printf("\n");
     }
 }

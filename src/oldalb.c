@@ -237,7 +237,10 @@ int oldalb_load(Song *song, char *errbuf, size_t errlen)
             oldfmt_str_sp(raw, rec + 0x00, sz, ins->name, 10);
         }
 
-        if (oldfmt_classify_instrument(ins, slot_volume[i])) fm_count++;
+        /* An .ALB carries nothing but 64-byte Adlib editor records, so every
+         * instrument is a genuine OPL2 patch. */
+        if (oldfmt_classify_instrument(ins, slot_volume[i], OSL1_SYNTH_FM))
+            fm_count++;
         else midi_count++;
         valid_count++;
     }

@@ -171,16 +171,34 @@ void oldfmt_editor_ops_to_adl(const uint8_t *mod, const uint8_t *car,
  * 0 for "melodic", which is what the driver's own bounds test does. */
 uint8_t oldfmt_rhythm_code(uint8_t raw_field);
 
-/* Fill the device-independent tail of an Instrument: default volume from the
- * slot table, the nominal synth type, and the FM/MIDI classification. Returns
- * 1 if the instrument carries a usable FM patch.
+/* Does an old-format 256-byte block's first 8 bytes look like an MT-32 Patch
+ * Memory entry rather than an OPL2 register pair? MED.EXE's own B6 loader
+ * (med.asm 0x25DC-0x26F2) tags every block device 4 (Roland) and reshapes
+ * block[0:8] + block[0x12:0x12+236] into a 244-byte timbre dump, so these eight
+ * bytes ARE the Patch Memory header (LAPC1.DEV.annotated.asm:780-796):
  *
- * The old format predates MED's multi-device support: there is no synth-type
- * or GM-program selector in either instrument source, so every instrument is
- * nominally an OPL2 patch. We still classify by how much of the patch is
- * actually populated, because a file authored for Roland leaves the FM bytes
- * as unused leftovers and would otherwise be reported as playable Adlib. */
-int oldfmt_classify_instrument(Instrument *ins, uint8_t slot_volume);
+ *   b0 timbre group 0..3   b1 timbre number     b2 key shift 0..48
+ *   b3 fine tune 0..100     b4 bender range 0..24 b5 assign mode 0..3
+ *   b6 reverb switch 0..1   b7 dummy (ignored by the MT-32, so not tested)
+ *
+ * On the labelled OSL1 corpus this passes 99.0% of known-Roland records and
+ * 0.0% of known-Adlib ones, so it cleanly separates a Roland block (which must
+ * NOT be voiced on the OPL2) from a genuine FM one. `p8` must have 8 readable
+ * bytes. */
+int oldfmt_mt32_sig(const uint8_t *p8);
+
+/* Fill the device-independent tail of an Instrument: default volume from the
+ * slot table, its device code, and the FM/renderability classification.
+ * Returns 1 if the instrument carries a usable OPL2 FM patch.
+ *
+ * `device` is the resolved OSL device code (OSL1_SYNTH_FM for a genuine Adlib
+ * patch, OSL1_SYNTH_ROLAND for an MT-32 block the OPL2 cannot voice). A Roland
+ * instrument is marked not-FM and its adl[] is cleared so it stays silent
+ * rather than rendering the timbre bytes as garbage OPL2 registers. An FM
+ * instrument is still checked for actual operator data, because a file authored
+ * for another device can leave the FM bytes as unused leftovers. */
+int oldfmt_classify_instrument(Instrument *ins, uint8_t slot_volume,
+                               uint8_t device);
 
 /* ---- what a loader hands back ------------------------------------------- */
 typedef struct {
