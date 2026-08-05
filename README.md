@@ -20,9 +20,17 @@ specification per format:
 | **`OSL1.md`** | the `"OSL1"` container — 1992–93, five device targets |
 | **`RLD.md`** | pre-OSL1 `B4 9A 01` and `B6 9A 01`, the editor working files |
 | **`ALB.md`** | pre-OSL1 `20 AD 01`, the `.ALB` runtime export |
+| **`EFFECTS.md`** | all four generations' effect sets and player features compared, and what `replay.c` does and does not cover |
 
 The three old generations are set side by side below, under
 [The three pre-OSL1 generations](#the-three-pre-osl1-generations).
+
+> **`EFFECTS.md` (2026-08) supersedes this document on two points.** `OSL1`'s
+> effect `0x0E` is **stop channel**, not pattern break — `TRACKER.DRV` `0x1351`
+> sets a flag that `0x0FFE` feeds to `stop_channel` (`0x0BFF`) — and `OSL1` has
+> no pattern break at all, `0x0D` being a stub in both of its tables. Anywhere
+> below that describes `0x0E` as OSL1's pattern break is wrong. `EFFECTS.md` §4
+> has the evidence and §7 the resulting gap list.
 
 > **Status:** the Adlib path is implemented and validated. Both former unknowns
 > — the compressed row decoder and the Adlib note/instrument model — are fully
@@ -500,6 +508,7 @@ work.
 | `osl1_scan.py` | magic/device census over a corpus |
 | `instr_probe.py` | instrument-record correlation between corpora |
 | `cmp_pitch.py`, `cmp_pitch_global.py`, `regcmp.py` | register/pitch trace comparison |
+| `fxhist.c` | per-generation effect-command and parameter census — the evidence behind `EFFECTS.md`. `#include`s `src/replay.c` so it can sample between `decode_row()` and `trigger_row()`, before the row dispatch consumes `0x06`/`0x0C`/`0x0E` |
 
 ## 9. Layout
 ```
@@ -508,6 +517,7 @@ medplay/
 ├── OSL1.md              OSL1 container specification
 ├── RLD.md               pre-OSL1 B4 / B6 specification
 ├── ALB.md               pre-OSL1 20 AD 01 (.ALB) specification
+├── EFFECTS.md           effect / player-feature audit across all four generations
 ├── Makefile
 ├── src/{main,osl1,replay,opl_dev,opl3}.{c,h}
 │   └── {oldfmt,oldrld,oldalb}.{c,h}                 pre-OSL1 loaders
@@ -515,6 +525,7 @@ medplay/
 │         {dro_dump,dro_patches,dro_notes}.py          DRO capture analysis
 │         {gen_compare,alb_probe,alb_cells}.py         pre-OSL1 format analysis
 │         {osl1_scan,instr_probe,cmp_pitch,regcmp}.py  corpus analysis
+│         fxhist.c                                     effect census (EFFECTS.md)
 └── test/{TITLE.ADL, title.dro, *.trace}
 ```
 

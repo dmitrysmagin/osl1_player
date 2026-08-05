@@ -730,12 +730,23 @@ times** in the `.ALB` corpus, exactly as a stubbed handler predicts.
 
 The per-row table above sends `0x0D` to a real handler at `0x073B` and `0x0E` to
 the bare `ret` at `0x0647`. `ADLIB.DRV`, the `B4` driver, does the same. So two
-of the three pre-`OSL1` generations demonstrably break on `0x0D`, whereas OSL1 —
-and therefore `replay.c` — uses `0x0E`.
+of the three pre-`OSL1` generations demonstrably break on `0x0D`, whereas
+`replay.c` — following what we then believed about OSL1 — uses `0x0E`.
 
 The corpus agrees: `0x0D` appears in 8 of the 16 `.ALB` files (43 cells), `0x0E`
 in only 2. `CRUSADE/CRUSFX.ALB` is the clincher — a sound-effect bank of 25
 one-position cues carrying exactly 25 `0x0D`s, one to terminate each.
+
+> **Correction (2026-08).** The premise of the last clause was wrong. `0x0E` is
+> not OSL1's pattern break either. `TRACKER.DRV`'s per-row `0x0E` handler is
+> `0x1351: movb $0xff,ds:0x1357 / ret`, and the only consumer of that flag is
+> `0x0FFE: testb $0xff,ds:0x1357` → `0x100F: jmp stop_channel (0x0BFF)`. OSL1's
+> `0x0E` is **stop channel**; OSL1 has **no pattern break at all**, because
+> `0x0D` is a bare `ret` in both of its tables. So `replay.c`'s
+> `case 0x0E: break_pending = 1` is wrong for all four generations at once: it
+> loses the break the old formats do have and invents one OSL1 never had, while
+> silently dropping stop-channel. See `EFFECTS.md` §4 for the full four-way
+> comparison.
 
 **`replay.c` still routes `0x0E` for all formats.** Fixing it properly means
 splitting the behaviour by generation rather than by the current `old_format`

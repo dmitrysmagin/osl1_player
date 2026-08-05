@@ -687,8 +687,8 @@ correctly means "five ticks per row" (tempo 50, speed 6 → 5) rather than
 
 > **`0x0D` versus `0x0E` for pattern break — settled for `B4` and `.ALB`,
 > still open for `B6`.** The same effect table shows `ADLIB.DRV` handling
-> **`0x0D`** as pattern break with `0x0E` stubbed, whereas OSL1 — and therefore
-> `replay.c` — uses `0x0E`.
+> **`0x0D`** as pattern break with `0x0E` stubbed, whereas `replay.c` —
+> following what we then believed about OSL1 — uses `0x0E`.
 >
 > The `.ALB` driver found in 2026-07 (`ALB.md` §10.3) agrees with `ADLIB.DRV`:
 > its per-tick dispatch table sends `0x0D` to a real handler at `0x073B` and
@@ -704,6 +704,26 @@ correctly means "five ticks per row" (tempo 50, speed 6 → 5) rather than
 > `0x0E`. `replay.c` still routes `0x0E` for all formats; fixing it properly
 > means splitting the behaviour by generation rather than by `old_format`, which
 > is a change worth making deliberately rather than as a side effect.
+
+> **Correction (2026-08) — `0x0E` is not OSL1's pattern break, and `B6` is no
+> longer ambiguous.** Two pieces of evidence, both new:
+>
+> 1. `TRACKER.DRV`'s per-row `0x0E` handler is `0x1351: movb $0xff,ds:0x1357 /
+>    ret`. The sole consumer of that flag is `0x0FFE: testb $0xff,ds:0x1357` →
+>    `0x100F: jmp stop_channel (0x0BFF)`. OSL1's `0x0E` is **stop channel**, and
+>    since `0x0D` is a bare `ret` in *both* OSL1 tables, **OSL1 has no pattern
+>    break at all.** All four generations therefore agree that `0x0E` is not a
+>    break; `replay.c`'s `case 0x0E: break_pending = 1` is wrong everywhere, and
+>    it swallows stop-channel as a side effect.
+> 2. `med.asm:0x24b0`–`0x2556` is `MED.EXE`'s `B6` pattern converter and it
+>    copies cell bytes verbatim — no effect remap — while `strings MED.EXE`
+>    yields exactly one driver name, `tracker\tracker.drv`. So `B6` is
+>    *mechanically* OSL1. But its 9,558 `Fxx` parameters cluster on 6, i.e. tick
+>    counts, and it carries 1,546 `0x0D` cells against 129 `0x0E`: the files were
+>    *authored* under old semantics regardless of what played them. Treat `B6` as
+>    old — which is what `replay.c`'s `old_format` flag already does for `Fxx`.
+>
+> See `EFFECTS.md` §4 for the four-way slot-by-slot comparison.
 
 ---
 
