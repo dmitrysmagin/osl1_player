@@ -34,7 +34,8 @@ try:
 except (AttributeError, ValueError):
     pass
 
-SYNTH_NAMES = {0x02: "FM-short", 0x04: "FM-ext", 0x08: "MIDI"}
+# OSL device codes (D_DEVICENUMBER), not FM sub-types. 0x04 is Roland MT-32.
+SYNTH_NAMES = {0x02: "Adlib", 0x04: "Roland", 0x08: "SCC-1", 0x81: "SNES"}
 
 # Instrument pointer table: `instr_count` file-absolute u32 record offsets
 # starting here, immediately followed by the records. Must match osl1.h.

@@ -294,11 +294,19 @@ typedef struct {
 } Song;
 ```
 
-**Instrument record layout** (stride `0x3E`): `+0x00` len, `+0x04` p1, `+0x06`
-p2, `+0x0A` 20-byte name, `+0x1E` a non-Adlib device sub-record, **`+0x2E` the
-16-byte Adlib patch**. Reading the patch from `+0x1E` (the earlier guess) loads
-the wrong bytes — the real Adlib operator data is at `+0x2E`, confirmed
-byte-for-byte against the DRO capture.
+**Instrument record layout** (single-variant FM case, stride `0x3E`): `+0x00`
+len, `+0x04` n_variants, `+0x06` desc0, `+0x0A` 20-byte name, `+0x1A` the OSL
+device code, **`+0x2E` the 16-byte Adlib patch**. Reading the patch from `+0x1E`
+(the earlier guess) loads the wrong bytes — the real Adlib operator data is at
+`+0x2E`, confirmed byte-for-byte against the DRO capture.
+
+A record is really a **container of per-device variants**, not a flat struct;
+`+0x2E` is the payload of the *FM* (device `0x02`) variant. Device `0x04` is
+Roland MT-32 — a 244-byte timbre dump, not OPL2 registers — and such records are
+silenced on the OPL2 rather than voiced from their first 11 bytes (the
+`JINGLE.RLD` bug). `parse_instr_record()` walks the chain and prefers the FM
+variant; see `OSL1.md` §6 and `RLD.md` §7 for the full layout and the
+`oldfmt_mt32_sig()` Roland test.
 
 ### `oldfmt.c` / `oldrld.c` / `oldalb.c` — the pre-OSL1 loaders
 

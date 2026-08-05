@@ -160,74 +160,95 @@ Entries failing these tests are placeholders/padding and are skipped.
 
 ## 6. Instrument records
 
-Every record begins with a common header. The **record length** (`+0x00`) and
-the **synth-type code** (`+0x24`) are 1:1 correlated across the whole corpus and
-determine the record's total size and meaning.
+> **Correction (this rewrite).** An instrument record is **not** a flat struct
+> with a "synth-type code" that picks one of FM-short / FM-ext / MIDI. It is a
+> *container of one or more per-device variants*. Each variant carries its own
+> **OSL device code** — the same `D_DEVICENUMBER` enum every `.DEV` exports at
+> offset 0 (`LAPC1.DEV.annotated.asm:29`) — and its own device-specific payload.
+> The value earlier drafts called "synth `0x24`" is the device code of the
+> *first* variant, and the length↔code correlation is simply that each device's
+> payload is a fixed size. In particular **`0x04` is Roland MT-32 / LAPC-1, not
+> "FM-ext"**: those 286-byte records hold a 244-byte MT-32 timbre dump, and
+> feeding their first 11 bytes to the OPL2 renders garbage (this was the
+> `JINGLE.RLD` bug). Confirmed against MED.EXE's own loader (`med.asm`
+> 0x25DC–0x26F2), `TRACKER.DRV` 0x15E1/0x10CD/0x1236, and `ADLIB.DEV:48`.
 
-### 6.1 Common header
+### 6.1 Record container header
 
-| Offset | Type      | Field    | Notes                                                       |
-|--------|-----------|----------|-------------------------------------------------------------|
-| +0x00  | u16       | length   | Total record length. Fixed per synth type (see §6.3).       |
-| +0x04  | u16       | p1       | Constant `0x0001` corpus-wide; never read by the driver. Inert metadata **(inferred)**. |
-| +0x06  | u16       | p2       | Constant `0x0006` corpus-wide; never read by the driver. Inert metadata **(inferred)**. |
-| +0x0A  | char[20]  | name     | Instrument name, NUL-padded.                                |
-| +0x1E  | u8        | (runtime) | Consumed by the driver's *runtime* record after load; raw on-disk meaning not fully reversed **(unverified)**. Earlier drafts guessed "transpose" here — the real note transpose is `+0x22` (see below). |
-| +0x1F  | u8        | vol_cap   | Volume ceiling in the driver's runtime record **(unverified)**. |
-| +0x20  | s8        | finetune  | **The editor's "FineTune" field** (signed, MED.EXE editor range −99..+99). Confirmed by disassembling MED.EXE's instrument-editor gadget handlers: Volume/Trans/FineTune edit a scratch buffer that is a byte-for-byte copy of the record (the name gadget copies 20 bytes from buffer +0x0A, pinning the base). FineTune → buffer 0x8972 = record +0x20; Trans → 0x8974 = +0x22; Volume → 0x8975 = +0x23. **It is distinct from transpose and has NO effect on replay pitch:** every OSL device driver derives pitch from the note number via a fixed 12-semitone-per-octave table (`ADLIB.DEV` note-on → fnum table @0x3B5, period forced to 0x2000; `SBLAST.DEV` `DoNoteOn` → `rate = 256 − 1000000/FreqTable[note]`). All ~15k note-ons in the DRO captures land exactly on the 12-value F-number grid, and +0x20 is `0` in all 860 corpus FM instruments. Parsed for display only **(confirmed)**. |
-| +0x22  | s8        | transpose | **The editor's "Trans" field: signed per-instrument note transpose in semitones** (editor range −24..+24). Added to the pattern note before the OPL note→F-number/block conversion. Confirmed against `COLUMBIA.ADL` vs its DRO capture (`LOGDRUM1` = −24, `"saw synth"`/`OBOE1` = +12): without it the drum kit renders two octaves too high. Corpus-wide 99.9% of values lie in ±36 semitones and 90.7% are exact octave multiples (0/±12/±24) **(confirmed)**. |
-| +0x23  | u8        | volume    | **The editor's "Volume" field** (0..0x7F, `0x7F` = max). Confirmed via the editor's Volume gadget (clamps 0x00..0x7F) at buffer 0x8975 = record +0x23 **(confirmed)**. |
-| +0x24  | u8        | synth     | Synth-type code (see §6.2).                                  |
+| Offset | Type      | Field       | Notes                                                       |
+|--------|-----------|-------------|-------------------------------------------------------------|
+| +0x00  | u16       | length      | Total record span **minus 4** (excludes this field). 58 for a lone Adlib variant, 286 for Roland, 170 for SCC-1. |
+| +0x04  | u16       | n_variants  | Number of device variants in this record. `1` in all but 5 corpus records; MED.EXE's loader writes `1` (`med.asm` 0x26BC). |
+| +0x06  | u16       | desc0       | Offset of variant 0 measured from `+0x04`; always `6` (`med.asm` 0x26C1). |
+| +0x08  | u16       | 0           | Written `0` by the loader (`med.asm` 0x26C7). |
+| …      | u16[]     | descriptors | `n_variants − 1` further 4-byte descriptors (`02 00 12 00` in the corpus) when the record carries more than one variant. |
 
-### 6.2 Synth-type codes (`+0x24`)
+The variants themselves follow contiguously, starting at `+0x04 + desc0`
+(= `+0x0A` for a single-variant record). Each variant is walked by adding its
+own payload length; the chain closes exactly on `length` for 6750 of 6757
+corpus records (the 7 exceptions are `.SNS` sample banks).
 
-This is an **exclusive enum**, not a bitmask. A record's byte layout commits it
-to exactly one type; FM and MIDI never combine within a single instrument (a
-*file* may mix single-type instruments — that is what "Mixed" in §7 means). The
-combined bit values (`0x06`, `0x0A`, `0x0E`) never occur in real records.
+### 6.2 Variant layout
 
-| Code   | Name       | Record len | Meaning                                                    |
-|--------|------------|------------|------------------------------------------------------------|
-| `0x02` | FM-short   | 58 (0x3A)  | Bare, "flattened" OPL2 instrument: header + name + one 11-byte OPL2 patch. |
-| `0x04` | FM-ext     | 286 (0x11E)| Native MED FM instrument: identical header + the **same** 11-byte OPL2 patch, **plus** 228 bytes of MED editor data (see §6.4). |
-| `0x08` | MIDI       | 170 (0xAA) | MIDI/program instrument: no FM patch; a GM program number at `+0x30`. |
-| `0x81` | SNES sample| variable   | SNES sampled instrument (only in `.SNS` banks). Different, variable-length layout — out of scope for the FM/MIDI song path. **(inferred)** |
+All offsets are **variant-relative**. For a single-variant record the variant
+base is record `+0x0A`, so the file offsets in the right column are what earlier
+drafts hard-coded (and remain correct for that common case).
 
-Any other value at `+0x24` (e.g. `0x00`, `0x09`, `0x43`, `0x47`) with a
-non-matching length is a mis-parse of a placeholder/non-song file, not a real
-type.
+| Var off | Type      | Field       | Single-var file off | Notes |
+|---------|-----------|-------------|---------------------|-------|
+| +0x00   | char[20]  | name        | +0x0A               | Instrument name, NUL-padded. |
+| +0x14   | u16       | 0xFFFF      | +0x1E               | Sentinel. |
+| +0x16   | s8        | finetune    | +0x20               | Editor "FineTune" (−99..+99). **No effect on replay pitch** — every OSL driver quantises pitch to whole semitones from the note number (`ADLIB.DEV` fnum table @0x3B5; `SBLAST.DEV` `DoNoteOn`). Display only **(confirmed)**. |
+| +0x18   | s8        | transpose   | +0x22               | Editor "Trans": signed semitone transpose, added to the pattern note before the note→F-number/block conversion (`TRACKER.DRV:10CD`). `COLUMBIA.ADL` `LOGDRUM1` = −24. **(confirmed)** |
+| +0x19   | u8        | vol_cap     | +0x23               | Volume ceiling (`TRACKER.DRV:1236`). |
+| +0x1A   | u8        | device      | +0x24               | OSL device code — see §6.3. **This is the byte earlier drafts called "synth".** |
+| +0x20   | u32       | paylen      | +0x2A               | Payload length in bytes (`med.asm` 0x2685 writes `0xF4` = 244 for Roland). |
+| +0x24   | payload   | payload     | +0x2E               | Device-specific; exactly the pointer `D_InstInit` receives (`ADLIB.DEV:48`). §6.5 covers the Adlib payload. |
 
-### 6.3 FM-short vs FM-ext: same sound, different storage
+> The drivers' own base pointer is the **variant**, not the record:
+> `TRACKER.DRV:15E1` does `add di,6` after fetching the record, so
+> record-relative = variant-relative + 6. That is why the single-variant file
+> offsets above are all the variant offsets plus 6.
 
-FM-short and FM-ext are **played identically** by `TRACKER.DRV` + `ADLIB.DEV`.
-The driver never branches on the `+0x24` code; both types contribute only:
+### 6.3 Device codes (`variant +0x1A`)
 
-* `length` (`+0x00`), used to reject empty records,
-* the runtime transpose/vol-cap fields, and
-* the **11-byte OPL2 patch at `+0x2E`** (§6.5), uploaded verbatim.
+The OSL `D_DEVICENUMBER` enum. Payload size is 1:1 with the device, which is
+what produces the length↔code correlation earlier drafts noted:
 
-Neither `TRACKER.DRV` nor `ADLIB.DEV` reads any record byte at or beyond offset
-`0x3A` (confirmed by full-binary disassembly scan). Therefore:
+| Code   | Device            | Payload | Record len | Meaning                                                        |
+|--------|-------------------|---------|------------|----------------------------------------------------------------|
+| `0x02` | Adlib / OPL2      | 16 (11 live) | 58 (0x3A)  | Two-operator OPL2 voice (§6.5). The only device medplay renders. |
+| `0x04` | Roland LAPC-1 / MT-32 | 244    | 286 (0x11E)| MT-32 timbre dump: Patch Memory header + Timbre Common + four 58-byte partials (`LAPC1.DEV.annotated.asm:775-904`). **Not OPL2 data.** |
+| `0x08` | Roland SCC-1 / GS | 128     | 170 (0xAA) | GS/MIDI program; the GM program number is at payload `+0x02`.   |
+| `0x81` | SNES S-DSP        | variable | variable  | Sampled instrument (only in `.SNS` banks). Not OPL2.            |
 
-* **FM-short (58 B)** is a stripped, patch-only export — everything the driver
-  needs and nothing more.
-* **FM-ext (286 B)** is a *superset*: the same playable patch plus the editor's
-  source parameters. FM-ext is the dominant native form; FM-short is the
-  exported/imported form.
+A variant walk that lands on any other code with a non-matching length is a
+mis-parse of a placeholder/non-song file. medplay renders **only** device
+`0x02`; every other device is treated as silent (see §7).
 
-For faithful OPL2 playback, reading the 11-byte patch at `+0x2E` is complete for
-both types.
+### 6.4 The MT-32 payload (`0x04`, first 8 bytes)
 
-### 6.4 FM-ext editor tail (`+0x3A` … `+0x11E`)
+The 244-byte Roland payload opens with the MT-32 **Patch Memory** entry
+(`LAPC1.DEV.annotated.asm:780-796`), followed by Timbre Common (`0x0A..0x0D`)
+and four 58-byte partials:
 
-228 bytes of MED-native instrument programming, used only by `MED.EXE`'s editor
-(and, presumably, by the other device renderers). It contains command bytes and
-envelope/sequence tables recognisable by run-filled regions of `0x32` (`'2'`)
-and `0x64` (`'d'`). The exact sub-layout (volume sequence, arpeggio/waveform
-sequence, vibrato, etc.) is only partially decoded and is **not required** for
-Adlib playback **(unverified)**.
+| Byte | Field         | Range  |
+|------|---------------|--------|
+| 0    | timbre group  | 0..3   |
+| 1    | timbre number | —      |
+| 2    | key shift     | 0..48  |
+| 3    | fine tune     | 0..100 |
+| 4    | bender range  | 0..24  |
+| 5    | assign mode   | 0..3   |
+| 6    | reverb switch | 0..1   |
+| 7    | dummy         | ignored by the MT-32 |
 
-### 6.5 The 11-byte OPL2 patch (`+0x2E`, FM records)
+This header is the **signature** the old-format loader uses to tell a Roland
+block from an OPL2 one (see `RLD.md` §7): a block passing `b0≤3 && b2≤48 &&
+b3≤100 && b4≤24 && b5≤3 && b6≤1` is Roland. On the labelled OSL1 corpus that
+passes 99.0% of device-`0x04` records and 0.0% of device-`0x02` ones.
+
+### 6.5 The 11-byte OPL2 patch (Adlib payload, `variant +0x24`)
 
 Two-operator OPL2 voice. `ADLIB.DEV`'s operator programmer uploads the bytes in
 this exact order (verified against the disassembly at `~0xD7F` and DRO capture):
@@ -246,18 +267,20 @@ this exact order (verified against the disassembly at `~0xD7F` and DRO capture):
 | 9          | 0xE0          | carrier   | waveform select                  |
 | 10         | 0xC0          | channel   | feedback / connection            |
 
-A robust FM-vs-MIDI test (used by the parser) is to count non-zero bytes in this
-11-byte patch: FM patches carry ~7–9 non-zero bytes; MIDI/program records carry
-0–1. A threshold of ≥4 separates the two cleanly. (Caveat: SNES `.SNS` sample
-records can false-positive here because sample data sits at this offset.)
+The parser decides renderability from the **device code** (§6.3), not by
+sniffing these bytes: only device `0x02` yields a usable OPL2 patch, and its
+adl[] is kept; every other device is silenced and its adl[] is zeroed so the
+non-OPL2 payload can never be uploaded as OPL registers. (The old non-zero-byte
+heuristic survives only as a fallback for records whose device code is
+unrecognised — i.e. non-song files.)
 
-### 6.6 MIDI record extras
+### 6.6 SCC-1 / MIDI record extras
 
 | Offset | Type | Field   | Notes                                  |
 |--------|------|---------|----------------------------------------|
-| +0x30  | u8   | program | General MIDI program number (0–127).   |
+| payload +0x02 | u8 | program | General MIDI program number (0–127), for device `0x08`. |
 
-For MIDI records the `+0x2E` region is empty (no OPL2 patch).
+For non-Adlib devices there is no OPL2 patch; medplay leaves the voice silent.
 
 ---
 
@@ -270,11 +293,15 @@ usable OPL2 FM patches (i.e. what the Adlib backend can render):
 | Class    | Condition                                              | Meaning                          |
 |----------|-------------------------------------------------------|----------------------------------|
 | Unknown  | no valid instruments                                   | nothing to render                |
-| Adlib    | every valid instrument has an OPL2 FM patch            | fully OPL2-renderable            |
-| Mixed    | some FM, some MIDI/program                              | partly renderable (MIDI = silent on OPL2) |
-| MIDI     | only MIDI/program instruments                          | not OPL2-renderable              |
+| Adlib    | every valid instrument is a device-`0x02` OPL2 variant | fully OPL2-renderable           |
+| Mixed    | some Adlib, some Roland/SCC-1/SNES                      | partly renderable (non-Adlib = silent) |
+| MIDI     | no Adlib variant anywhere                               | not OPL2-renderable              |
 
-Corpus distribution (326 files): ~199 Adlib, ~61 Mixed, ~64 MIDI, ~2 Unknown.
+Corpus distribution (325 OSL1-magic files): 20 Adlib, 48 Mixed, 252 MIDI,
+5 Unknown. The overwhelming MIDI majority is the point of this correction — most
+`.RLD`/`.LAP`/`.SCC` files are Roland/SCC-1 songs with **no** OPL2 patch, and
+earlier builds mislabelled all of them "Adlib (renderable)" and rendered their
+device payloads as OPL2 garbage.
 
 ---
 
@@ -404,8 +431,9 @@ Pitch periods are centred at `0x2000`; a semitone step is `0x155`, giving
   references only I/O base `0x388`, never a second chip). When a song declares
   more tracks than the chip has channels, `ADLIB.DEV`'s dynamic voice allocator
   folds logical tracks onto the 9 physical channels (voice stealing). There is
-  **no** dual-OPL2 / OPL3 support, and the synth codes `0x02`/`0x04` are **not**
-  single- vs dual-chip markers (see §6.3).
+  **no** dual-OPL2 / OPL3 support. The device codes are OSL `D_DEVICENUMBER`
+  values (`0x02` = Adlib, `0x04` = Roland MT-32), **not** single- vs dual-chip
+  markers (see §6.3).
 * MIDI-family devices (LAPC-I / SCC-1) natively provide up to 16 channels, which
   is why the >9-voice songs cluster on `.RLD`/`.SCC`/`.LAP`.
 
@@ -414,14 +442,16 @@ Pitch periods are centred at `0x2000`; a semitone step is `0x155`, giving
 ## 12. What the driver reads vs ignores
 
 Load-time resolution (`TRACKER.DRV @0x15C4`) hands the engine a pointer to
-`record+6`. During playback the only record bytes consumed are:
+`record+6` (i.e. the variant base, §6.2). During playback, for the **Adlib**
+device the only bytes consumed are:
 
-* `length` at `+0x00` (must be non-zero),
-* transpose at runtime `+0x1E` and volume-cap at `+0x1F`,
-* the 11-byte OPL2 patch at `+0x2E` (Adlib backend).
+* `length` at record `+0x00` (must be non-zero),
+* transpose at variant `+0x18` and volume-cap at variant `+0x19`,
+* the 11-byte OPL2 patch at the Adlib variant's payload (`variant +0x24`).
 
-Everything else — `p1`/`p2`, the FM-ext editor tail, `checksum`, `ver_c` — is
-either editor metadata or unused by the Adlib replay path.
+Everything else — the container descriptors, non-Adlib variant payloads,
+`checksum`, `ver_c` — is either editor metadata, another device's data, or
+unused by the Adlib replay path.
 
 ---
 
@@ -438,20 +468,20 @@ either editor metadata or unused by the Adlib replay path.
      Pattern-cell selectors are 1-based: selector n -> table index n-1.
 ```
 
-**Instrument record (FM)**
+**Instrument record (container)**
 ```
-0x00 u16 length         0x20 s8  finetune ("FineTune"; NOT applied - see 6.1)
-0x04 u16 p1 (inert)     0x22 s8  transpose ("Trans", semitones, signed)
-0x06 u16 p2 (inert)     0x23 u8  volume (0..0x7F)
-0x0A char[20] name      0x24 u8  synth (0x02/0x04)
-0x1E u8  (runtime)      0x2E [11] OPL2 patch
-0x1F u8  vol_cap (rt)   0x3A.. FM-ext editor tail (0x04 only)
+0x00 u16 length (span-4)  0x06 u16 desc0 (=6)
+0x04 u16 n_variants       0x08 u16 0
+variants start at 0x04+desc0 (=0x0A for a single-variant record)
 ```
 
-**Instrument record (MIDI, 0x08)**
+**Variant (offsets relative to variant base; single-var file off in parens)**
 ```
-0x00 u16 length (170)   0x24 u8 synth (0x08)
-0x0A char[20] name      0x30 u8 GM program
++0x00 char[20] name (0x0A)    +0x1A u8  device (0x24)  02=Adlib 04=Roland 08=SCC1
++0x16 s8  finetune (0x20)     +0x20 u32 paylen  (0x2A)
++0x18 s8  transpose (0x22)    +0x24 payload     (0x2E)
++0x19 u8  vol_cap  (0x23)
+Adlib payload = 11-byte OPL2 patch. SCC-1 payload+0x02 = GM program.
 ```
 
 **Pattern block**
@@ -475,11 +505,14 @@ either editor metadata or unused by the Adlib replay path.
 
 ## Appendix C — Confidence notes
 
-* **Confirmed:** signature, header offsets, pointer table, synth-code↔length
-  mapping, OPL2 patch layout and register order, pattern-block core fields,
-  position/cell codec, effect set, single-OPL2 hardware, driver read set.
-* **Inferred:** `p1`/`p2` being inert, `defaults` rest sentinel `0x7F7F`,
-  `0x81` = SNES sample type, corpus-class thresholds.
-* **Unverified / open:** raw on-disk meaning of record `+0x1E`/`+0x1F` before
-  MED's load transform, `constant` (`+0x05`), `checksum`, `ver_c`, and the exact
-  sub-structure of the FM-ext editor tail.
+* **Confirmed:** signature, header offsets, pointer table, the variant-container
+  layout and device↔payload-length mapping (`med.asm` 0x25DC–0x26F2), device
+  code `0x04` = Roland MT-32, OPL2 patch layout and register order, pattern-block
+  core fields, position/cell codec, effect set, single-OPL2 hardware, driver
+  read set.
+* **Inferred:** container descriptor bytes (`02 00 12 00`) being inert,
+  `defaults` rest sentinel `0x7F7F`, `0x81` = SNES sample device, corpus-class
+  thresholds.
+* **Unverified / open:** the `0xFFFF` sentinel at variant `+0x14`, `constant`
+  (`+0x05`), `checksum`, `ver_c`, and the internal sub-structure of the Roland
+  (Timbre Common + partials) and SCC-1 payloads beyond their headers.

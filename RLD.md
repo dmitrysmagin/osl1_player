@@ -438,12 +438,25 @@ structure with the name re-interleaved after byte 8.
 > of a freshly allocated record, lifts 10 bytes from block `+0x08` into the
 > record's name field, and then at `0x26AF` executes
 > `mov di,0x32 / mov si,0x3C / mov cx,0xEC / rep movsb` — **236 bytes moved down
-> by 10, closing exactly the gap the name occupied.** It then sets the synth
-> code to `0x04` (FM extended) and hands `record+0x2A` to the device driver's
-> `D_InstInit`. Since the runtime record is the OSL1 record minus its 4-byte
-> length prefix, `record+0x2A` is precisely OSL1 `+0x2E`. The split is therefore
-> not an inference at all: the loader performs it explicitly, and MED.EXE's
-> handling of these instruments is correct.
+> by 10, closing exactly the gap the name occupied.** It then sets the record's
+> device code to `0x04` (OSL `D_DEVICENUMBER` = LAPC1/MT-32; **not** "FM
+> extended", as an earlier revision of this document guessed) and hands
+> `record+0x2A` to the device driver's `D_InstInit`. Since the runtime record is
+> the OSL1 record minus its 4-byte length prefix, `record+0x2A` is precisely OSL1
+> `+0x2E`. The split is therefore not an inference at all: the loader performs it
+> explicitly.
+>
+> **What device 0x04 means for the block (2026-08).** The gap-close does *not*
+> imply the block is an OPL2 patch. Device `0x04` is Roland MT-32, and the
+> 236-byte payload it hands to `D_InstInit` is a 244-byte MT-32 timbre dump, not
+> an OPL2 register set — exactly as in OSL1 (`OSL1.md` §6.3). The first 8 bytes
+> of a genuine MT-32 block satisfy the Patch Memory signature
+> (`oldfmt_mt32_sig()`: `b0≤3 && b2≤48 && b3≤100 && b4≤24 && b5≤3 && b6≤1`).
+> Feeding those bytes to the OPL2 produces garbage — the same JINGLE.RLD bug
+> documented for OSL1. So the split patch at `+0x00`/`+0x12` is the correct OPL2
+> reading **only for genuinely-FM blocks**; MT-32 blocks must be silenced on the
+> OPL2 and voiced (if at all) through a real MT-32. See §7.5 for how `oldrld.c`
+> tells the two apart.
 
 > **Correction.** `src/oldrld.c` previously read `adl[0..15]` straight from
 > `+0x2E`, an offset carried over verbatim from the OSL1 record layout. In a
@@ -455,11 +468,17 @@ structure with the name re-interleaved after byte 8.
 
 ### 7.2 What the block does *not* contain
 
-* **No synth-type code.** The old format predates MED's multi-device support:
-  every instrument is an OPL2 patch. Byte `+0x00` is `adl[0]`, the modulator's
-  `0x20` register — its frequent value of `0x02` is a coincidence that made it
-  look like OSL1's `SYNTH_FM_SHORT` code.
-* **No GM program number**, for the same reason.
+* **No in-block device code.** Unlike an OSL1 variant, the 256-byte block has no
+  byte that names its target device — byte `+0x00` is `adl[0]`, the modulator's
+  `0x20` register, not a synth code (its frequent value of `0x02` is a
+  coincidence that made it look like OSL1's device-0x02 code). The device is
+  decided at *load* time instead: `MED.EXE` stamps `0x04` (Roland MT-32) onto
+  every B6 record it builds (§7.1). A block is therefore **not** guaranteed to be
+  an OPL2 patch — it may be an MT-32 timbre dump, and the only way to tell from
+  the block alone is the Patch Memory signature (`oldfmt_mt32_sig()`, §7.5).
+* **No GM program number.** MT-32 blocks carry a full timbre dump rather than a
+  program index, and FM blocks carry the split OPL2 patch — neither stores a GM
+  program byte.
 * **No transpose or finetune field has been located.** OSL1's `+0x22` transpose
   is non-zero in only 82 of the 789 matched reference instruments, and no old
   block offset correlates with it above chance. `oldrld.c` therefore uses zero
@@ -566,19 +585,37 @@ the *Adlib editor* last wrote.
 
 | Value | Behaviour |
 |---|---|
-| `auto` (default) | `editor` for B4, `block` for B6 — i.e. whatever that generation's own loader read. |
-| `block` | Always the 256-byte block's split patch (§7.1). |
+| `auto` (default) | `editor` when the file carries a **live** editor bank (§7.4), else `block`. On the `block` path each slot is additionally tested with `oldfmt_mt32_sig()` and silenced as Roland MT-32 if it matches (§7.1). |
+| `block` | Always the 256-byte block's split patch (§7.1). No Roland detection — every slot is voiced as OPL2. |
 | `editor` | Always the 64-byte editor record (§7.4); falls back to the block wherever the bank is absent **or blank**. |
 
-The `auto` mapping is not a guess. `ADLIB.DRV` (the only loader that ever read a
-B4) initialises voices from the editor bank, and `MED.EXE` (the only loader that
-ever read a B6) initialises them from the block — the latter verified in
-`../RE-REPORT.md` §11.5.
+The `auto` mapping is not a guess. A live editor bank is present *only* when the
+composer actually opened the Adlib editor, and it is the bank that both loaders
+voice from when it exists: `ADLIB.DRV` (the only loader that ever read a B4)
+always initialises voices from the bank, and where a B6 file also carries a live
+bank the same is true. When no live bank exists the block is all there is, and on
+that path a block may be an MT-32 timbre dump rather than an OPL2 patch (§7.1) —
+so `auto` silences signature-matching blocks on the OPL2 rather than voicing MT-32
+data as garbage. This generalises the old "B4 → editor, B6 → block" rule: it is
+really "live bank → editor, else block", which happens to coincide with
+generation only because most B4s have live banks and most B6s do not.
 
-In practice the fallback carries most of the load: of the 189 B4 files, 99
-resolve to `editor` and 90 to `block`, because their banks are reserved but
-blank. Resolving `auto` to `editor` unconditionally on B4 would decode 90 files
-from space fill and render them near-silent.
+Two consequences worth stating outright:
+
+* **Genuine Adlib B6 files are unaffected.** 17 B6 files carry a live editor bank
+  (§7.4) — dual-format tunes whose composer used both the Adlib editor and MT-32.
+  Under `auto` these resolve to `editor` and render their real OPL2 patches, not
+  the MT-32 blocks. (e.g. `HEROS/INGAME.RLD`, `NEWDG/ING3.RLD`: OBOE1, GUITAR1,
+  BDRUM1.)
+* **Roland-only B6 files are silenced on the OPL2.** Files like `PCCOMP.RLD`
+  whose blocks are MT-32 dumps (ResoSynth, Sax 1, Fantasy, Warm Pad) have no live
+  bank, take the `block` path, match `oldfmt_mt32_sig()`, and are tagged Roland —
+  so their first 8 bytes are no longer fed to the OPL2 as register data.
+
+In practice the block/editor fallback still carries most of the *B4* load: of the
+189 B4 files, 99 resolve to `editor` and 90 to `block`, because their banks are
+reserved but blank. Resolving `auto` to `editor` unconditionally on B4 would
+decode 90 files from space fill and render them near-silent.
 
 ---
 
